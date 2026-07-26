@@ -133,8 +133,10 @@ function NodeCard({
   onMoveEnd: () => void;
   onConnect: () => void;
 }) {
+  const cardRef = useRef<HTMLElement | null>(null);
   const drag = useRef<{
-    pointerId: number;
+    input: "pointer" | "touch";
+    identifier: number;
     startX: number;
     startY: number;
     nodeX: number;
@@ -142,58 +144,164 @@ function NodeCard({
     moved: boolean;
   } | null>(null);
 
+  function canvasBlocksNodeDrag() {
+    const canvas = cardRef.current?.closest<HTMLElement>(".canvas-wrap");
+    return (
+      canvas?.dataset.pinching === "true" ||
+      canvas?.dataset.dragCancelled === "true"
+    );
+  }
+
+  function beginDrag(
+    input: "pointer" | "touch",
+    identifier: number,
+    clientX: number,
+    clientY: number,
+  ) {
+    if (canvasBlocksNodeDrag()) return;
+    if (cardRef.current) cardRef.current.dataset.dragging = "true";
+    drag.current = {
+      input,
+      identifier,
+      startX: clientX,
+      startY: clientY,
+      nodeX: node.x,
+      nodeY: node.y,
+      moved: false,
+    };
+  }
+
+  function updateDrag(clientX: number, clientY: number) {
+    if (!drag.current) return;
+    const dx = (clientX - drag.current.startX) / zoom;
+    const dy = (clientY - drag.current.startY) / zoom;
+    if (Math.hypot(dx, dy) > 4) drag.current.moved = true;
+    onMove(
+      Math.max(16, drag.current.nodeX + dx),
+      Math.max(16, drag.current.nodeY + dy),
+    );
+  }
+
+  function finishDrag(activate: boolean) {
+    if (!drag.current) return;
+    const moved = drag.current.moved;
+    drag.current = null;
+    if (cardRef.current) delete cardRef.current.dataset.dragging;
+    if (moved) onMoveEnd();
+    else if (activate) {
+      if (connecting) onConnect();
+      else onSelect();
+    }
+  }
+
+  function cancelDrag() {
+    drag.current = null;
+    if (cardRef.current) delete cardRef.current.dataset.dragging;
+  }
+
   return (
     <article
+      ref={cardRef}
       className={`strategy-node kind-${node.kind} ${selected ? "is-selected" : ""} ${
         connecting ? "is-connecting" : ""
       }`}
       style={{ left: node.x, top: node.y }}
       onPointerDown={(event) => {
         if ((event.target as HTMLElement).closest("button")) return;
-        if (
-          (event.currentTarget.closest(".canvas-wrap") as HTMLElement | null)
-            ?.dataset.pinching === "true"
-        ) {
-          return;
+        // Touch has a dedicated path below because iOS Safari can axis-lock
+        // Pointer Events inside a transformed overflow container.
+        if (event.pointerType === "touch") return;
+        event.preventDefault();
+        event.stopPropagation();
+        try {
+          event.currentTarget.setPointerCapture(event.pointerId);
+        } catch {
+          // Pointer capture is an optimization; document-level dispatch still works.
         }
-        (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-        drag.current = {
-          pointerId: event.pointerId,
-          startX: event.clientX,
-          startY: event.clientY,
-          nodeX: node.x,
-          nodeY: node.y,
-          moved: false,
-        };
-      }}
-      onPointerMove={(event) => {
-        if (!drag.current || drag.current.pointerId !== event.pointerId) return;
-        if (
-          (event.currentTarget.closest(".canvas-wrap") as HTMLElement | null)
-            ?.dataset.pinching === "true"
-        ) {
-          drag.current = null;
-          return;
-        }
-        const dx = (event.clientX - drag.current.startX) / zoom;
-        const dy = (event.clientY - drag.current.startY) / zoom;
-        if (Math.abs(dx) + Math.abs(dy) > 4) drag.current.moved = true;
-        onMove(
-          Math.max(16, drag.current.nodeX + dx),
-          Math.max(16, drag.current.nodeY + dy),
+        beginDrag(
+          "pointer",
+          event.pointerId,
+          event.clientX,
+          event.clientY,
         );
       }}
-      onPointerUp={(event) => {
-        if (!drag.current || drag.current.pointerId !== event.pointerId) return;
-        const moved = drag.current.moved;
-        drag.current = null;
-        if (moved) {
-          onMoveEnd();
-        } else {
-          if (connecting) onConnect();
-          else onSelect();
+      onPointerMove={(event) => {
+        if (
+          !drag.current ||
+          drag.current.input !== "pointer" ||
+          drag.current.identifier !== event.pointerId
+        ) {
+          return;
         }
+        if (canvasBlocksNodeDrag()) {
+          cancelDrag();
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        updateDrag(event.clientX, event.clientY);
       }}
+      onPointerUp={(event) => {
+        if (
+          !drag.current ||
+          drag.current.input !== "pointer" ||
+          drag.current.identifier !== event.pointerId
+        ) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        finishDrag(true);
+      }}
+      onPointerCancel={() => cancelDrag()}
+      onLostPointerCapture={() => {
+        if (drag.current?.input === "pointer") finishDrag(false);
+      }}
+      onTouchStart={(event) => {
+        if ((event.target as HTMLElement).closest("button")) return;
+        if (event.touches.length !== 1 || canvasBlocksNodeDrag()) {
+          cancelDrag();
+          return;
+        }
+        const touch = event.changedTouches[0];
+        event.preventDefault();
+        beginDrag(
+          "touch",
+          touch.identifier,
+          touch.clientX,
+          touch.clientY,
+        );
+      }}
+      onTouchMove={(event) => {
+        if (!drag.current || drag.current.input !== "touch") return;
+        if (event.touches.length !== 1 || canvasBlocksNodeDrag()) {
+          cancelDrag();
+          return;
+        }
+        const touch = Array.from(event.touches).find(
+          (item) => item.identifier === drag.current?.identifier,
+        );
+        if (!touch) return;
+        event.preventDefault();
+        event.stopPropagation();
+        updateDrag(touch.clientX, touch.clientY);
+      }}
+      onTouchEnd={(event) => {
+        if (!drag.current || drag.current.input !== "touch") return;
+        if (canvasBlocksNodeDrag()) {
+          cancelDrag();
+          return;
+        }
+        const ended = Array.from(event.changedTouches).some(
+          (item) => item.identifier === drag.current?.identifier,
+        );
+        if (!ended) return;
+        event.preventDefault();
+        event.stopPropagation();
+        finishDrag(true);
+      }}
+      onTouchCancel={() => cancelDrag()}
+      onContextMenu={(event) => event.preventDefault()}
     >
       <div className="node-topline">
         <span className="node-kind">{KIND_LABEL[node.kind]}</span>
@@ -403,9 +511,62 @@ export default function Home() {
     }));
   }
 
+  function beginPinchGesture(
+    points: { x: number; y: number }[],
+    wrap: HTMLDivElement,
+  ) {
+    const centerX = (points[0].x + points[1].x) / 2;
+    const centerY = (points[0].y + points[1].y) / 2;
+    const rect = wrap.getBoundingClientRect();
+    const canvas = wrap.querySelector<HTMLElement>(".strategy-canvas");
+    const localX = centerX - rect.left;
+    const localY = centerY - rect.top;
+    pinchState.current = {
+      distance: Math.max(1, pointerDistance(points)),
+      zoom,
+      anchorX:
+        (wrap.scrollLeft + localX - (canvas?.offsetLeft ?? 0)) / zoom,
+      anchorY:
+        (wrap.scrollTop + localY - (canvas?.offsetTop ?? 0)) / zoom,
+    };
+    wrap.dataset.pinching = "true";
+    wrap.dataset.dragCancelled = "true";
+    panState.current = null;
+  }
+
+  function updatePinchGesture(
+    points: { x: number; y: number }[],
+    wrap: HTMLDivElement,
+  ) {
+    if (!pinchState.current) return;
+    const distance = Math.max(1, pointerDistance(points));
+    const nextZoom = clampZoom(
+      pinchState.current.zoom * (distance / pinchState.current.distance),
+    );
+    const centerX = (points[0].x + points[1].x) / 2;
+    const centerY = (points[0].y + points[1].y) / 2;
+    const rect = wrap.getBoundingClientRect();
+    const canvas = wrap.querySelector<HTMLElement>(".strategy-canvas");
+    const localX = centerX - rect.left;
+    const localY = centerY - rect.top;
+    const nextScrollLeft =
+      (canvas?.offsetLeft ?? 0) +
+      pinchState.current.anchorX * nextZoom -
+      localX;
+    const nextScrollTop =
+      (canvas?.offsetTop ?? 0) +
+      pinchState.current.anchorY * nextZoom -
+      localY;
+    setZoom(nextZoom);
+    requestAnimationFrame(() => {
+      wrap.scrollLeft = nextScrollLeft;
+      wrap.scrollTop = nextScrollTop;
+    });
+  }
+
   function handleCanvasPointerDown(event: React.PointerEvent<HTMLDivElement>) {
     const wrap = canvasWrapRef.current;
-    if (!wrap) return;
+    if (!wrap || event.pointerType === "touch") return;
     activePointers.current.set(event.pointerId, {
       x: event.clientX,
       y: event.clientY,
@@ -413,27 +574,12 @@ export default function Home() {
 
     if (activePointers.current.size >= 2) {
       const points = [...activePointers.current.values()].slice(0, 2);
-      const centerX = (points[0].x + points[1].x) / 2;
-      const centerY = (points[0].y + points[1].y) / 2;
-      const rect = wrap.getBoundingClientRect();
-      const canvas = wrap.querySelector<HTMLElement>(".strategy-canvas");
-      const localX = centerX - rect.left;
-      const localY = centerY - rect.top;
-      pinchState.current = {
-        distance: Math.max(1, pointerDistance(points)),
-        zoom,
-        anchorX:
-          (wrap.scrollLeft + localX - (canvas?.offsetLeft ?? 0)) / zoom,
-        anchorY:
-          (wrap.scrollTop + localY - (canvas?.offsetTop ?? 0)) / zoom,
-      };
-      wrap.dataset.pinching = "true";
-      panState.current = null;
+      beginPinchGesture(points, wrap);
       return;
     }
 
     if (
-      event.pointerType === "touch" &&
+      event.pointerType === "pen" &&
       !(event.target as HTMLElement).closest(
         ".strategy-node, button, input, textarea, select, .edge-hit",
       )
@@ -451,7 +597,13 @@ export default function Home() {
 
   function handleCanvasPointerMove(event: React.PointerEvent<HTMLDivElement>) {
     const wrap = canvasWrapRef.current;
-    if (!wrap || !activePointers.current.has(event.pointerId)) return;
+    if (
+      !wrap ||
+      event.pointerType === "touch" ||
+      !activePointers.current.has(event.pointerId)
+    ) {
+      return;
+    }
     activePointers.current.set(event.pointerId, {
       x: event.clientX,
       y: event.clientY,
@@ -460,29 +612,7 @@ export default function Home() {
     if (activePointers.current.size >= 2 && pinchState.current) {
       event.preventDefault();
       const points = [...activePointers.current.values()].slice(0, 2);
-      const distance = Math.max(1, pointerDistance(points));
-      const nextZoom = clampZoom(
-        pinchState.current.zoom * (distance / pinchState.current.distance),
-      );
-      const centerX = (points[0].x + points[1].x) / 2;
-      const centerY = (points[0].y + points[1].y) / 2;
-      const rect = wrap.getBoundingClientRect();
-      const canvas = wrap.querySelector<HTMLElement>(".strategy-canvas");
-      const localX = centerX - rect.left;
-      const localY = centerY - rect.top;
-      const nextScrollLeft =
-        (canvas?.offsetLeft ?? 0) +
-        pinchState.current.anchorX * nextZoom -
-        localX;
-      const nextScrollTop =
-        (canvas?.offsetTop ?? 0) +
-        pinchState.current.anchorY * nextZoom -
-        localY;
-      setZoom(nextZoom);
-      requestAnimationFrame(() => {
-        wrap.scrollLeft = nextScrollLeft;
-        wrap.scrollTop = nextScrollTop;
-      });
+      updatePinchGesture(points, wrap);
       return;
     }
 
@@ -496,12 +626,100 @@ export default function Home() {
   }
 
   function handleCanvasPointerEnd(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.pointerType === "touch") return;
     const wrap = canvasWrapRef.current;
     activePointers.current.delete(event.pointerId);
     if (panState.current?.pointerId === event.pointerId) panState.current = null;
     if (activePointers.current.size < 2) {
       pinchState.current = null;
       if (wrap) delete wrap.dataset.pinching;
+    }
+    if (!activePointers.current.size && wrap) {
+      delete wrap.dataset.dragCancelled;
+    }
+  }
+
+  function handleCanvasTouchStart(event: React.TouchEvent<HTMLDivElement>) {
+    const wrap = canvasWrapRef.current;
+    if (!wrap) return;
+    if (event.touches.length >= 2) {
+      event.preventDefault();
+      const points = Array.from(event.touches)
+        .slice(0, 2)
+        .map((touch) => ({ x: touch.clientX, y: touch.clientY }));
+      beginPinchGesture(points, wrap);
+      return;
+    }
+
+    const touch = event.touches[0];
+    if (
+      touch &&
+      !(event.target as HTMLElement).closest(
+        ".strategy-node, button, input, textarea, select, .edge-hit",
+      )
+    ) {
+      event.preventDefault();
+      panState.current = {
+        pointerId: touch.identifier,
+        x: touch.clientX,
+        y: touch.clientY,
+        scrollLeft: wrap.scrollLeft,
+        scrollTop: wrap.scrollTop,
+      };
+    }
+  }
+
+  function handleCanvasTouchMove(event: React.TouchEvent<HTMLDivElement>) {
+    const wrap = canvasWrapRef.current;
+    if (!wrap) return;
+    if (event.touches.length >= 2) {
+      event.preventDefault();
+      const points = Array.from(event.touches)
+        .slice(0, 2)
+        .map((touch) => ({ x: touch.clientX, y: touch.clientY }));
+      if (!pinchState.current) beginPinchGesture(points, wrap);
+      else updatePinchGesture(points, wrap);
+      return;
+    }
+
+    if (!panState.current || event.touches.length !== 1) return;
+    const touch = Array.from(event.touches).find(
+      (item) => item.identifier === panState.current?.pointerId,
+    );
+    if (!touch) return;
+    event.preventDefault();
+    wrap.scrollLeft =
+      panState.current.scrollLeft - (touch.clientX - panState.current.x);
+    wrap.scrollTop =
+      panState.current.scrollTop - (touch.clientY - panState.current.y);
+  }
+
+  function handleCanvasTouchEnd(event: React.TouchEvent<HTMLDivElement>) {
+    const wrap = canvasWrapRef.current;
+    if (event.touches.length < 2) {
+      pinchState.current = null;
+      if (wrap) delete wrap.dataset.pinching;
+    }
+    if (!event.touches.length && wrap) {
+      delete wrap.dataset.dragCancelled;
+    }
+    if (
+      !event.touches.length ||
+      !Array.from(event.touches).some(
+        (touch) => touch.identifier === panState.current?.pointerId,
+      )
+    ) {
+      panState.current = null;
+    }
+  }
+
+  function handleCanvasTouchCancel() {
+    const wrap = canvasWrapRef.current;
+    pinchState.current = null;
+    panState.current = null;
+    if (wrap) {
+      delete wrap.dataset.pinching;
+      delete wrap.dataset.dragCancelled;
     }
   }
 
@@ -998,6 +1216,10 @@ export default function Home() {
           onPointerMove={handleCanvasPointerMove}
           onPointerUp={handleCanvasPointerEnd}
           onPointerCancel={handleCanvasPointerEnd}
+          onTouchStart={handleCanvasTouchStart}
+          onTouchMove={handleCanvasTouchMove}
+          onTouchEnd={handleCanvasTouchEnd}
+          onTouchCancel={handleCanvasTouchCancel}
           onWheel={handleCanvasWheel}
         >
           <div className="canvas-grid" />
@@ -1107,7 +1329,7 @@ export default function Home() {
 
           <div className="zoom-indicator" aria-live="polite">
             <strong>{Math.round(zoom * 100)}%</strong>
-            <span>Pinch untuk zoom · geser untuk menjelajah</span>
+            <span>Seret simpul bebas · pinch untuk zoom · geser ruang kosong</span>
           </div>
         </div>
       </section>

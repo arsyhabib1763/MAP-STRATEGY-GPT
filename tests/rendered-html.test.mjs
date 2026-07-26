@@ -68,7 +68,16 @@ test("ships the model pipeline, audit engine, and responsive product shell", asy
     ]);
 
   assert.match(page, /onPointerMove/);
+  assert.match(page, /onTouchStart/);
+  assert.match(page, /onTouchMove/);
+  assert.match(page, /onTouchCancel/);
+  assert.match(page, /Math\.hypot\(dx, dy\)/);
+  assert.match(page, /event\.pointerType === "touch"/);
+  assert.match(page, /Seret simpul bebas/);
   assert.match(page, /handleCanvasPointerMove/);
+  assert.match(page, /handleCanvasTouchMove/);
+  assert.match(page, /beginPinchGesture/);
+  assert.match(page, /updatePinchGesture/);
   assert.match(page, /pointerDistance/);
   assert.match(page, /handleConnect/);
   assert.match(page, /removeEdge/);
@@ -121,6 +130,8 @@ test("ships the model pipeline, audit engine, and responsive product shell", asy
   assert.match(packageJson, /"build:pages"/);
   assert.match(layout, /lang="id"/);
   assert.match(css, /touch-action:\s*none/);
+  assert.match(css, /-webkit-touch-callout:\s*none/);
+  assert.match(css, /strategy-node\[data-dragging="true"\]/);
   assert.match(css, /@media \(max-width:\s*720px\)/);
   assert.match(css, /prefers-reduced-motion/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);

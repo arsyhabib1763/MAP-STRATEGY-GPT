@@ -348,9 +348,10 @@ select:focus-visible {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: none;
   background: #f3f0e8;
   touch-action: none;
+  -webkit-overflow-scrolling: auto;
 }
 
 .canvas-grid {
@@ -461,12 +462,24 @@ select:focus-visible {
   box-shadow: 0 8px 20px rgba(36, 37, 42, 0.08);
   cursor: grab;
   user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
   touch-action: none;
+  will-change: left, top;
   transition: box-shadow 160ms ease, border-color 160ms ease;
 }
 
 .strategy-node:active {
   cursor: grabbing;
+}
+
+.strategy-node[data-dragging="true"] {
+  z-index: 20;
+  cursor: grabbing;
+  box-shadow: 0 0 0 3px rgba(90, 114, 255, 0.24), 0 20px 38px rgba(36, 37, 42, 0.2);
+  transition: none;
 }
 
 .strategy-node.kind-goal {
@@ -1674,6 +1687,12 @@ select:focus-visible {
 
   .canvas-toolbar {
     padding-left: 8px;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x;
+  }
+
+  .canvas-toolbar > * {
+    flex: 0 0 auto;
   }
 
   .tool-segment button,
@@ -1702,12 +1721,14 @@ select:focus-visible {
   }
 
   .zoom-indicator {
-    right: 10px;
+    right: auto;
+    left: 10px;
     bottom: 72px;
+    max-width: min(236px, calc(100vw - 88px));
   }
 
   .zoom-indicator span {
-    display: none;
+    display: inline;
   }
 
   .field-row.three {
