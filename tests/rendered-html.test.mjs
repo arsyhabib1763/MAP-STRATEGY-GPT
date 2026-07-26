@@ -39,14 +39,29 @@ test("server-renders the SIMPUL strategy workspace", async () => {
 });
 
 test("ships the model pipeline, audit engine, and responsive product shell", async () => {
-  const [page, layout, css, strategy, generateRoute, auditRoute, packageJson] =
+  const [
+    page,
+    layout,
+    css,
+    strategy,
+    browserPipeline,
+    generateRoute,
+    auditRoute,
+    pagesConfig,
+    packageJson,
+  ] =
     await Promise.all([
       readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
       readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
       readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
       readFile(new URL("../app/lib/strategy.ts", import.meta.url), "utf8"),
+      readFile(
+        new URL("../app/lib/openrouter-browser.ts", import.meta.url),
+        "utf8",
+      ),
       readFile(new URL("../app/api/generate/route.ts", import.meta.url), "utf8"),
       readFile(new URL("../app/api/audit/route.ts", import.meta.url), "utf8"),
+      readFile(new URL("../vite.pages.config.ts", import.meta.url), "utf8"),
       readFile(new URL("../package.json", import.meta.url), "utf8"),
     ]);
 
@@ -65,6 +80,11 @@ test("ships the model pipeline, audit engine, and responsive product shell", asy
   assert.match(generateRoute, /openrouter:web_search/);
   assert.match(generateRoute, /response_format/);
   assert.match(auditRoute, /x-openrouter-key/);
+  assert.match(browserPipeline, /openrouter:web_search/);
+  assert.match(browserPipeline, /generateStrategyInBrowser/);
+  assert.match(page, /isGitHubPages/);
+  assert.match(pagesConfig, /MAP-STRATEGY-GPT/);
+  assert.match(packageJson, /"build:pages"/);
   assert.match(layout, /lang="id"/);
   assert.match(css, /touch-action:\s*none/);
   assert.match(css, /@media \(max-width:\s*720px\)/);

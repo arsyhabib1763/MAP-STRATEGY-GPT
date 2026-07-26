@@ -72,3 +72,16 @@ node --test tests/rendered-html.test.mjs
 ```
 
 Build menghasilkan worker Cloudflare-compatible di `dist/server/index.js`.
+
+## GitHub Pages
+
+Build statis untuk pengujian perangkat sentuh:
+
+```bash
+pnpm run build:pages
+```
+
+Hasilnya berada di `docs/` dan dapat diterbitkan dari branch `main` dengan
+source `/docs`. Pada domain `github.io`, pipeline OpenRouter berjalan langsung
+dari browser ke OpenRouter. API key hanya disimpan di `sessionStorage` dan tidak
+ditulis ke source, artifact, atau GitHub.

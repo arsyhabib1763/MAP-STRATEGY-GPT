@@ -49,6 +49,14 @@ function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function isGitHubPages() {
+  return (
+    typeof window !== "undefined" &&
+    (window.location.hostname.endsWith(".github.io") ||
+      window.location.pathname.startsWith("/MAP-STRATEGY-GPT"))
+  );
+}
+
 function ScoreRing({ score }: { score: number }) {
   const degrees = Math.round((score / 100) * 360);
   return (
@@ -269,20 +277,28 @@ export default function Home() {
     auditTimer.current = setTimeout(async () => {
       setAiAuditBusy(true);
       try {
-        const response = await fetch("/api/audit", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-openrouter-key": apiKey,
-          },
-          body: JSON.stringify({
-            objective: document.prompt,
-            rubric: document.rubric,
-            graph: { nodes: document.nodes, edges: document.edges },
-            deterministicAudit: localAudit,
-          }),
-        });
-        if (response.ok) setSemanticAudit(await response.json());
+        const payload = {
+          objective: document.prompt,
+          rubric: document.rubric,
+          graph: { nodes: document.nodes, edges: document.edges },
+          deterministicAudit: localAudit,
+        };
+        if (isGitHubPages()) {
+          const { auditStrategyInBrowser } = await import(
+            "./lib/openrouter-browser"
+          );
+          setSemanticAudit(await auditStrategyInBrowser({ key: apiKey, payload }));
+        } else {
+          const response = await fetch("/api/audit", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-openrouter-key": apiKey,
+            },
+            body: JSON.stringify(payload),
+          });
+          if (response.ok) setSemanticAudit(await response.json());
+        }
       } finally {
         setAiAuditBusy(false);
       }
@@ -525,16 +541,30 @@ export default function Home() {
         setNotice("Mode demo siap. Semua simpul dapat diedit.");
       } else {
         sessionStorage.setItem("simpul-openrouter-key", apiKey);
-        const response = await fetch("/api/generate", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-openrouter-key": apiKey,
-          },
-          body: JSON.stringify({ prompt, kind: planKind }),
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.message || "Pembuatan strategi gagal.");
+        let data;
+        if (isGitHubPages()) {
+          const { generateStrategyInBrowser } = await import(
+            "./lib/openrouter-browser"
+          );
+          data = await generateStrategyInBrowser({
+            key: apiKey,
+            prompt,
+            kind: planKind,
+          });
+        } else {
+          const response = await fetch("/api/generate", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-openrouter-key": apiKey,
+            },
+            body: JSON.stringify({ prompt, kind: planKind }),
+          });
+          data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.message || "Pembuatan strategi gagal.");
+          }
+        }
         const next = normalizeStrategy(data.strategy, prompt, planKind);
         setDocument(next);
         setSemanticAudit(data.semanticAudit);
