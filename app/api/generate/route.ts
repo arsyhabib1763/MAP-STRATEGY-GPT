@@ -2,11 +2,14 @@ import { NextResponse } from "next/server";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-const MODELS = {
-  thinker: "google/gemini-3.5-flash",
-  worker: "openai/gpt-5.2-codex",
-  architect: "anthropic/claude-sonnet-5",
-  auditor: "qwen/qwen3.7-max",
+const MODEL_CHAINS = {
+  thinker: [
+    "google/gemini-3.5-flash",
+    "openai/gpt-4o-mini-search-preview",
+  ],
+  worker: ["openai/gpt-5.2-codex", "google/gemini-3.5-flash-lite"],
+  architect: ["anthropic/claude-sonnet-5", "google/gemini-3.6-flash"],
+  auditor: ["qwen/qwen3.7-max", "qwen/qwen3.7-plus"],
 } as const;
 
 function getKey(request: Request) {
@@ -15,75 +18,108 @@ function getKey(request: Request) {
 
 async function callModel({
   key,
-  model,
+  models,
   system,
   user,
   schema,
   search = false,
 }: {
   key: string;
-  model: string;
+  models: readonly string[];
   system: string;
   user: string;
   schema: Record<string, unknown>;
   search?: boolean;
 }) {
-  const response = await fetch(OPENROUTER_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://sites.openai.com",
-      "X-Title": "SIMPUL Strategy Studio",
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      temperature: 0.2,
-      max_tokens: 5000,
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "strategy_payload",
-          strict: true,
-          schema,
-        },
-      },
-      provider: { require_parameters: true },
-      ...(search
-        ? {
+  const failures: string[] = [];
+
+  for (const model of models) {
+    const searchParameters =
+      model === "openai/gpt-4o-mini-search-preview"
+        ? { web_search_options: { search_context_size: "medium" } }
+        : {
             tools: [
               {
                 type: "openrouter:web_search",
                 parameters: {
-                  engine: "parallel",
-                  max_results: 6,
-                  max_total_results: 10,
-                  max_characters: 3500,
+                  engine: "auto",
+                  max_results: 5,
+                  max_total_results: 8,
+                  max_uses: 2,
+                  search_context_size: "low",
                 },
               },
             ],
-          }
-        : {}),
-    }),
-  });
-  if (!response.ok) {
+          };
+
+    const response = await fetch(OPENROUTER_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://simpul-strategy-studio.arsyhabib1763.chatgpt.site",
+        "X-Title": "SIMPUL Strategy Studio",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        max_tokens: 5000,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "strategy_payload",
+            strict: true,
+            schema,
+          },
+        },
+        provider: { require_parameters: true },
+        ...(search ? searchParameters : {}),
+      }),
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content;
+      if (!content) {
+        failures.push(`${model}: respons kosong`);
+        continue;
+      }
+      let parsed;
+      try {
+        parsed = typeof content === "string" ? JSON.parse(content) : content;
+      } catch {
+        failures.push(`${model}: JSON tidak valid`);
+        continue;
+      }
+      return {
+        data: parsed,
+        usage: data.usage,
+        model: data.model || model,
+        annotations: data.choices?.[0]?.message?.annotations ?? [],
+      };
+    }
+
     const detail = await response.text();
-    throw new Error(`${model}: ${response.status} ${detail.slice(0, 300)}`);
+    let message = detail.slice(0, 180);
+    try {
+      const parsed = JSON.parse(detail);
+      message = String(parsed?.error?.message || parsed?.message || message);
+    } catch {
+      // Keep the plain response text.
+    }
+    if (response.status === 401) throw new Error("API key OpenRouter ditolak.");
+    if (response.status === 402) {
+      throw new Error("Saldo OpenRouter tidak mencukupi.");
+    }
+    failures.push(`${model}: ${message || `HTTP ${response.status}`}`);
   }
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error(`${model}: respons kosong`);
-  const parsed = typeof content === "string" ? JSON.parse(content) : content;
-  return {
-    data: parsed,
-    usage: data.usage,
-    model: data.model || model,
-    annotations: data.choices?.[0]?.message?.annotations ?? [],
-  };
+
+  throw new Error(
+    `Semua model untuk role ini gagal. ${failures.join(" | ").slice(0, 420)}`,
+  );
 }
 
 const thinkerSchema = {
@@ -240,7 +276,7 @@ export async function POST(request: Request) {
 
     const thinker = await callModel({
       key,
-      model: MODELS.thinker,
+      models: MODEL_CHAINS.thinker,
       search: true,
       schema: thinkerSchema,
       system:
@@ -250,7 +286,7 @@ export async function POST(request: Request) {
 
     const worker = await callModel({
       key,
-      model: MODELS.worker,
+      models: MODEL_CHAINS.worker,
       schema: rubricSchema,
       system:
         "Anda adalah Worker & Evaluation-Engine Agent. Rancang rubrik penilaian kasus-spesifik yang dapat dihitung deterministik. Bobot harus berjumlah tepat 1. Gunakan empat dimensi: optimality, timeEfficiency, success, effortReturn. Tentukan horizon, asumsi, hard constraints, dan catatan audit. Keluarkan hanya JSON.",
@@ -259,7 +295,7 @@ export async function POST(request: Request) {
 
     const architect = await callModel({
       key,
-      model: MODELS.architect,
+      models: MODEL_CHAINS.architect,
       schema: graphSchema,
       system:
         "Anda adalah Nodes & Concept Map Architect. Ubah riset dan rubrik menjadi directed acyclic strategy graph yang ringkas dan dapat dieksekusi. Gunakan 5–14 simpul, judul maksimal 5 kata, detail konkret, koordinat dalam kanvas 1200x760, durasi dalam jam, effort dan impact 1–10, confidence 0–100. Semua id unik. Sisakan ruang antar simpul dan pastikan setiap simpul terhubung ke hasil. Keluarkan hanya JSON.",
@@ -273,7 +309,7 @@ export async function POST(request: Request) {
 
     const auditor = await callModel({
       key,
-      model: MODELS.auditor,
+      models: MODEL_CHAINS.auditor,
       schema: auditSchema,
       system:
         "Anda adalah Strategy Auditor. Tinjau koherensi semantik dari peta, cari bottleneck, asumsi rapuh, dan leverage terbesar. Jangan mengarang skor numerik karena skor dihitung mesin deterministik. Beri headline singkat dan 2–4 insight tindakan dalam Bahasa Indonesia. Keluarkan hanya JSON.",
@@ -311,7 +347,7 @@ export async function POST(request: Request) {
       semanticAudit: auditor.data,
       researchSummary: thinker.data.summary,
       usage,
-      modelPlan: MODELS,
+      modelPlan: MODEL_CHAINS,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Terjadi kesalahan.";

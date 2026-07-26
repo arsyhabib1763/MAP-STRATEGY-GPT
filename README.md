@@ -22,9 +22,12 @@ Semua model berada di bawah batas biaya yang ditetapkan: input kurang dari
 US$3 dan output kurang dari US$15 per satu juta token berdasarkan katalog
 OpenRouter ketika aplikasi disusun.
 
-Riset menggunakan server tool `openrouter:web_search` dengan Parallel sebagai
-engine dan batas hasil/konteks eksplisit. Semua keluaran antar-agent memakai
-JSON Schema strict agar graph dapat diproses secara deterministik.
+Riset menggunakan server tool `openrouter:web_search` dengan pemilihan engine
+otomatis dan batas hasil/konteks eksplisit. Jika server tool atau endpoint model
+utama sedang gagal, pipeline beralih ke model cadangan yang tetap berada di
+bawah batas biaya; untuk role riset tersedia failover native-search
+`openai/gpt-4o-mini-search-preview`. Semua keluaran antar-agent memakai JSON
+Schema strict agar graph dapat diproses secara deterministik.
 
 ## Audit dua lapis
 

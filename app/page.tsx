@@ -299,6 +299,8 @@ export default function Home() {
           });
           if (response.ok) setSemanticAudit(await response.json());
         }
+      } catch {
+        setSemanticAudit(null);
       } finally {
         setAiAuditBusy(false);
       }
@@ -986,7 +988,7 @@ export default function Home() {
               <div><span>Architect</span><strong>Claude Sonnet 5</strong><small>$2.00 / $10.00</small></div>
               <div><span>Auditor</span><strong>Qwen 3.7 Max</strong><small>$1.48 / $4.43</small></div>
             </div>
-            <p className="pricing-note">Harga input / output per 1 juta token, terverifikasi dari katalog OpenRouter saat aplikasi disusun.</p>
+            <p className="pricing-note">Harga input / output per 1 juta token, terverifikasi dari katalog OpenRouter saat aplikasi disusun. Setiap role memiliki model failover otomatis jika endpoint utama sedang bermasalah.</p>
             <button
               className="generate-button full"
               onClick={() => {
