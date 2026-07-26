@@ -27,7 +27,23 @@ otomatis dan batas hasil/konteks eksplisit. Jika server tool atau endpoint model
 utama sedang gagal, pipeline beralih ke model cadangan yang tetap berada di
 bawah batas biaya; untuk role riset tersedia failover native-search
 `openai/gpt-4o-mini-search-preview`. Semua keluaran antar-agent memakai JSON
-Schema strict agar graph dapat diproses secara deterministik.
+Schema strict dan response healing agar graph dapat diproses secara
+deterministik sekaligus lebih tahan terhadap JSON model yang tidak sempurna.
+
+## Mega Strategy Canvas
+
+- Tidak ada batas keras jumlah node pada editor maupun skema Architect Agent.
+  Canvas membesar otomatis dan tata letak deterministik memecah strategi panjang
+  menjadi kolom serta baris yang tetap terbaca.
+- Prompt awal tidak memiliki batas karakter dari aplikasi. Pengguna dapat
+  menempel strategi terperinci atau mengimpor berkas `.txt`/`.md`.
+- Setiap garis mempunyai tipe relasi dan keterangan otomatis yang dapat diedit.
+- Node dapat diduplikasi, dipecah menjadi langkah-langkah, diubah tipe/statusnya,
+  lalu disusun ulang secara deterministik.
+- Perangkat sentuh menggunakan pinch dua jari untuk zoom dan satu jari pada
+  ruang kosong untuk menggeser canvas.
+- Ekspor PDF memuat ringkasan, prompt lengkap, audit terakhir, strategy map
+  bertile untuk peta besar, serta sumber riset.
 
 ## Audit dua lapis
 
@@ -35,7 +51,8 @@ Schema strict agar graph dapat diproses secara deterministik.
    critical path, beban horizon, parallel track, rata-rata confidence, impact,
    dan rasio impact terhadap effort.
 2. **Auditor AI ter-buffer** berjalan sekitar 1,8 detik setelah perubahan
-   terakhir untuk menilai koherensi semantik dan trade-off.
+   terakhir (adaptif terhadap ukuran peta) untuk menilai koherensi semantik dan
+   trade-off.
 
 Skor akhir merupakan rata-rata berbobot dari:
 

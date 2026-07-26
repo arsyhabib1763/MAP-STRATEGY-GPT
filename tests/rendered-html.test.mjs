@@ -49,6 +49,7 @@ test("ships the model pipeline, audit engine, and responsive product shell", asy
     auditRoute,
     pagesConfig,
     packageJson,
+    pdfExporter,
   ] =
     await Promise.all([
       readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -63,15 +64,29 @@ test("ships the model pipeline, audit engine, and responsive product shell", asy
       readFile(new URL("../app/api/audit/route.ts", import.meta.url), "utf8"),
       readFile(new URL("../vite.pages.config.ts", import.meta.url), "utf8"),
       readFile(new URL("../package.json", import.meta.url), "utf8"),
+      readFile(new URL("../app/lib/export-pdf.js", import.meta.url), "utf8"),
     ]);
 
   assert.match(page, /onPointerMove/);
+  assert.match(page, /handleCanvasPointerMove/);
+  assert.match(page, /pointerDistance/);
   assert.match(page, /handleConnect/);
   assert.match(page, /removeEdge/);
+  assert.match(page, /selectedEdgeId/);
+  assert.match(page, /duplicateSelected/);
+  assert.match(page, /splitSelected/);
+  assert.match(page, /accept="\.txt,\.md,text\/plain,text\/markdown"/);
+  assert.match(page, /exportPdf/);
+  assert.doesNotMatch(page, /maxLength=/);
+  assert.doesNotMatch(page, /\/3000/);
+  assert.doesNotMatch(page, /zoom-controls/);
   assert.match(page, /localStorage\.setItem\("simpul-strategy"/);
   assert.match(page, /setTimeout\(async \(\) =>/);
   assert.match(strategy, /function countCycles/);
   assert.match(strategy, /function calculateCriticalPath/);
+  assert.match(strategy, /function arrangeStrategyNodes/);
+  assert.match(strategy, /function getStrategyCanvasSize/);
+  assert.match(strategy, /function inferEdgeRelation/);
   assert.match(strategy, /effortReturn/);
   assert.match(generateRoute, /google\/gemini-3\.5-flash/);
   assert.match(generateRoute, /openai\/gpt-5\.2-codex/);
@@ -85,15 +100,21 @@ test("ships the model pipeline, audit engine, and responsive product shell", asy
   assert.match(generateRoute, /web_search_options/);
   assert.match(generateRoute, /engine:\s*"auto"/);
   assert.match(generateRoute, /response_format/);
+  assert.match(generateRoute, /response-healing/);
+  assert.doesNotMatch(generateRoute, /maxItems:\s*14/);
+  assert.doesNotMatch(generateRoute, /prompt\.length\s*>\s*3000/);
   assert.doesNotMatch(generateRoute, /temperature:\s*0\./);
   assert.match(auditRoute, /x-openrouter-key/);
   assert.match(auditRoute, /qwen\/qwen3\.7-plus/);
+  assert.match(auditRoute, /response-healing/);
   assert.doesNotMatch(auditRoute, /temperature:\s*0\./);
   assert.match(browserPipeline, /openrouter:web_search/);
   assert.match(browserPipeline, /web_search_options/);
   assert.match(browserPipeline, /engine:\s*"auto"/);
   assert.doesNotMatch(browserPipeline, /engine:\s*"parallel"/);
   assert.doesNotMatch(browserPipeline, /temperature:\s*0\./);
+  assert.match(browserPipeline, /response-healing/);
+  assert.doesNotMatch(browserPipeline, /maxItems:\s*14/);
   assert.match(browserPipeline, /generateStrategyInBrowser/);
   assert.match(page, /isGitHubPages/);
   assert.match(pagesConfig, /MAP-STRATEGY-GPT/);
@@ -103,6 +124,9 @@ test("ships the model pipeline, audit engine, and responsive product shell", asy
   assert.match(css, /@media \(max-width:\s*720px\)/);
   assert.match(css, /prefers-reduced-motion/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
+  assert.match(packageJson, /jspdf/);
+  assert.match(pdfExporter, /createStrategyPdf/);
+  assert.match(pdfExporter, /addMapPages/);
 
   await assert.rejects(
     access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)),

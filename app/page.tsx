@@ -2,12 +2,20 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  arrangeStrategyNodes,
   auditStrategy,
   DEFAULT_RUBRIC,
   DEMO_STRATEGY,
+  deriveNodeStatus,
+  EDGE_RELATION_LABEL,
+  getStrategyCanvasSize,
+  inferEdgeRelation,
+  nodePriorityScore,
   normalizeStrategy,
   type AuditResult,
+  type EdgeRelation,
   type NodeKind,
+  type NodeStatus,
   type PlanKind,
   type StrategyDocument,
   type StrategyEdge,
@@ -47,6 +55,15 @@ function domainFromUrl(url: string) {
 
 function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function clampZoom(value: number) {
+  return Math.min(2.5, Math.max(0.2, value));
+}
+
+function pointerDistance(points: { x: number; y: number }[]) {
+  if (points.length < 2) return 0;
+  return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
 }
 
 function isGitHubPages() {
@@ -133,6 +150,12 @@ function NodeCard({
       style={{ left: node.x, top: node.y }}
       onPointerDown={(event) => {
         if ((event.target as HTMLElement).closest("button")) return;
+        if (
+          (event.currentTarget.closest(".canvas-wrap") as HTMLElement | null)
+            ?.dataset.pinching === "true"
+        ) {
+          return;
+        }
         (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
         drag.current = {
           pointerId: event.pointerId,
@@ -145,12 +168,19 @@ function NodeCard({
       }}
       onPointerMove={(event) => {
         if (!drag.current || drag.current.pointerId !== event.pointerId) return;
+        if (
+          (event.currentTarget.closest(".canvas-wrap") as HTMLElement | null)
+            ?.dataset.pinching === "true"
+        ) {
+          drag.current = null;
+          return;
+        }
         const dx = (event.clientX - drag.current.startX) / zoom;
         const dy = (event.clientY - drag.current.startY) / zoom;
         if (Math.abs(dx) + Math.abs(dy) > 4) drag.current.moved = true;
         onMove(
-          Math.max(16, Math.min(980, drag.current.nodeX + dx)),
-          Math.max(16, Math.min(640, drag.current.nodeY + dy)),
+          Math.max(16, drag.current.nodeX + dx),
+          Math.max(16, drag.current.nodeY + dy),
         );
       }}
       onPointerUp={(event) => {
@@ -189,6 +219,7 @@ export default function Home() {
     deepCopy(DEMO_STRATEGY),
   );
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>("portfolio");
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [connectSource, setConnectSource] = useState<string | null>(null);
   const [tool, setTool] = useState<"select" | "connect">("select");
   const [zoom, setZoom] = useState(0.88);
@@ -211,6 +242,7 @@ export default function Home() {
     insights: string[];
   } | null>(null);
   const [aiAuditBusy, setAiAuditBusy] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [history, setHistory] = useState<HistoryFrame[]>([]);
   const [future, setFuture] = useState<HistoryFrame[]>([]);
   const lastCommitted = useRef<HistoryFrame>({
@@ -218,11 +250,32 @@ export default function Home() {
     edges: deepCopy(DEMO_STRATEGY.edges),
   });
   const auditTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const canvasWrapRef = useRef<HTMLDivElement | null>(null);
+  const textImportRef = useRef<HTMLInputElement | null>(null);
+  const activePointers = useRef(new Map<number, { x: number; y: number }>());
+  const pinchState = useRef<{
+    distance: number;
+    zoom: number;
+    anchorX: number;
+    anchorY: number;
+  } | null>(null);
+  const panState = useRef<{
+    pointerId: number;
+    x: number;
+    y: number;
+    scrollLeft: number;
+    scrollTop: number;
+  } | null>(null);
   const localAudit = useMemo(
     () => auditStrategy(document.nodes, document.edges, document.rubric),
     [document.nodes, document.edges, document.rubric],
   );
   const selectedNode = document.nodes.find((node) => node.id === selectedNodeId);
+  const selectedEdge = document.edges.find((edge) => edge.id === selectedEdgeId);
+  const canvasSize = useMemo(
+    () => getStrategyCanvasSize(document.nodes),
+    [document.nodes],
+  );
 
   const commit = useCallback(() => {
     const current = {
@@ -242,10 +295,15 @@ export default function Home() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved) as StrategyDocument;
-        setDocument(parsed);
+        const restored = normalizeStrategy(
+          parsed,
+          parsed.prompt || "",
+          parsed.kind || "goal",
+        );
+        setDocument(restored);
         lastCommitted.current = {
-          nodes: deepCopy(parsed.nodes),
-          edges: deepCopy(parsed.edges),
+          nodes: deepCopy(restored.nodes),
+          edges: deepCopy(restored.edges),
         };
       } catch {
         localStorage.removeItem("simpul-strategy");
@@ -261,6 +319,7 @@ export default function Home() {
         setConnectSource(null);
         setTool("select");
         setInspectorOpen(false);
+        setSelectedEdgeId(null);
       }
     }
     window.addEventListener("keydown", handleKeydown);
@@ -268,12 +327,17 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem("simpul-strategy", JSON.stringify(document));
+    try {
+      localStorage.setItem("simpul-strategy", JSON.stringify(document));
+    } catch {
+      setNotice("Peta terlalu besar untuk penyimpanan lokal browser; ekspor PDF sebagai cadangan.");
+    }
   }, [document]);
 
   useEffect(() => {
     if (!apiKey || loading) return;
     if (auditTimer.current) clearTimeout(auditTimer.current);
+    const auditDelay = Math.min(6500, 1800 + document.nodes.length * 35);
     auditTimer.current = setTimeout(async () => {
       setAiAuditBusy(true);
       try {
@@ -304,7 +368,7 @@ export default function Home() {
       } finally {
         setAiAuditBusy(false);
       }
-    }, 1800);
+    }, auditDelay);
     return () => {
       if (auditTimer.current) clearTimeout(auditTimer.current);
     };
@@ -339,6 +403,114 @@ export default function Home() {
     }));
   }
 
+  function handleCanvasPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    const wrap = canvasWrapRef.current;
+    if (!wrap) return;
+    activePointers.current.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+
+    if (activePointers.current.size >= 2) {
+      const points = [...activePointers.current.values()].slice(0, 2);
+      const centerX = (points[0].x + points[1].x) / 2;
+      const centerY = (points[0].y + points[1].y) / 2;
+      const rect = wrap.getBoundingClientRect();
+      const canvas = wrap.querySelector<HTMLElement>(".strategy-canvas");
+      const localX = centerX - rect.left;
+      const localY = centerY - rect.top;
+      pinchState.current = {
+        distance: Math.max(1, pointerDistance(points)),
+        zoom,
+        anchorX:
+          (wrap.scrollLeft + localX - (canvas?.offsetLeft ?? 0)) / zoom,
+        anchorY:
+          (wrap.scrollTop + localY - (canvas?.offsetTop ?? 0)) / zoom,
+      };
+      wrap.dataset.pinching = "true";
+      panState.current = null;
+      return;
+    }
+
+    if (
+      event.pointerType === "touch" &&
+      !(event.target as HTMLElement).closest(
+        ".strategy-node, button, input, textarea, select, .edge-hit",
+      )
+    ) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      panState.current = {
+        pointerId: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        scrollLeft: wrap.scrollLeft,
+        scrollTop: wrap.scrollTop,
+      };
+    }
+  }
+
+  function handleCanvasPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    const wrap = canvasWrapRef.current;
+    if (!wrap || !activePointers.current.has(event.pointerId)) return;
+    activePointers.current.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+
+    if (activePointers.current.size >= 2 && pinchState.current) {
+      event.preventDefault();
+      const points = [...activePointers.current.values()].slice(0, 2);
+      const distance = Math.max(1, pointerDistance(points));
+      const nextZoom = clampZoom(
+        pinchState.current.zoom * (distance / pinchState.current.distance),
+      );
+      const centerX = (points[0].x + points[1].x) / 2;
+      const centerY = (points[0].y + points[1].y) / 2;
+      const rect = wrap.getBoundingClientRect();
+      const canvas = wrap.querySelector<HTMLElement>(".strategy-canvas");
+      const localX = centerX - rect.left;
+      const localY = centerY - rect.top;
+      const nextScrollLeft =
+        (canvas?.offsetLeft ?? 0) +
+        pinchState.current.anchorX * nextZoom -
+        localX;
+      const nextScrollTop =
+        (canvas?.offsetTop ?? 0) +
+        pinchState.current.anchorY * nextZoom -
+        localY;
+      setZoom(nextZoom);
+      requestAnimationFrame(() => {
+        wrap.scrollLeft = nextScrollLeft;
+        wrap.scrollTop = nextScrollTop;
+      });
+      return;
+    }
+
+    if (panState.current?.pointerId === event.pointerId) {
+      event.preventDefault();
+      wrap.scrollLeft =
+        panState.current.scrollLeft - (event.clientX - panState.current.x);
+      wrap.scrollTop =
+        panState.current.scrollTop - (event.clientY - panState.current.y);
+    }
+  }
+
+  function handleCanvasPointerEnd(event: React.PointerEvent<HTMLDivElement>) {
+    const wrap = canvasWrapRef.current;
+    activePointers.current.delete(event.pointerId);
+    if (panState.current?.pointerId === event.pointerId) panState.current = null;
+    if (activePointers.current.size < 2) {
+      pinchState.current = null;
+      if (wrap) delete wrap.dataset.pinching;
+    }
+  }
+
+  function handleCanvasWheel(event: React.WheelEvent<HTMLDivElement>) {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    setZoom((value) => clampZoom(value * Math.exp(-event.deltaY * 0.006)));
+  }
+
   function handleConnect(id: string) {
     if (!connectSource) {
       setConnectSource(id);
@@ -358,7 +530,18 @@ export default function Home() {
         nodes: deepCopy(document.nodes),
         edges: deepCopy(document.edges),
       };
-      const nextEdge = { id: uid("edge"), source: connectSource, target: id };
+      const sourceNode = document.nodes.find((node) => node.id === connectSource);
+      const targetNode = document.nodes.find((node) => node.id === id);
+      if (!sourceNode || !targetNode) {
+        setConnectSource(null);
+        return;
+      }
+      const nextEdge: StrategyEdge = {
+        id: uid("edge"),
+        source: connectSource,
+        target: id,
+        ...inferEdgeRelation(sourceNode, targetNode),
+      };
       setHistory((items) => [...items.slice(-29), previous]);
       setDocument((current) => ({
         ...current,
@@ -369,6 +552,9 @@ export default function Home() {
         nodes: deepCopy(document.nodes),
         edges: deepCopy([...document.edges, nextEdge]),
       };
+      setSelectedNodeId(null);
+      setSelectedEdgeId(nextEdge.id);
+      setInspectorOpen(true);
       setNotice("Koneksi baru diaudit.");
     }
     setConnectSource(null);
@@ -389,17 +575,22 @@ export default function Home() {
       edges: deepCopy(document.edges.filter((edge) => edge.id !== id)),
     };
     setFuture([]);
+    if (selectedEdgeId === id) {
+      setSelectedEdgeId(null);
+      setInspectorOpen(false);
+    }
     setNotice("Dependensi dilepas.");
   }
 
   function addNode() {
+    const slot = document.nodes.length;
     const next: StrategyNode = {
       id: uid("node"),
       title: "Langkah baru",
       detail: "Ketuk detail untuk memperjelas hasil yang diharapkan.",
       kind: "task",
-      x: 470 + Math.random() * 80,
-      y: 280 + Math.random() * 60,
+      x: 70 + Math.floor(slot / 6) * 290,
+      y: 80 + (slot % 6) * 180,
       duration: 2,
       effort: 3,
       impact: 6,
@@ -413,6 +604,7 @@ export default function Home() {
     setHistory((items) => [...items.slice(-29), previous]);
     setDocument((current) => ({ ...current, nodes: [...current.nodes, next] }));
     setSelectedNodeId(next.id);
+    setSelectedEdgeId(null);
     setInspectorOpen(true);
     setFuture([]);
   }
@@ -425,6 +617,113 @@ export default function Home() {
         node.id === selectedNodeId ? { ...node, ...patch } : node,
       ),
     }));
+  }
+
+  function updateSelectedEdge(patch: Partial<StrategyEdge>) {
+    if (!selectedEdgeId) return;
+    setDocument((current) => ({
+      ...current,
+      edges: current.edges.map((edge) =>
+        edge.id === selectedEdgeId ? { ...edge, ...patch } : edge,
+      ),
+    }));
+  }
+
+  function duplicateSelected() {
+    if (!selectedNode) return;
+    const duplicate: StrategyNode = {
+      ...selectedNode,
+      id: uid("node"),
+      title: `${selectedNode.title} - salinan`,
+      x: selectedNode.x + 290,
+      y: selectedNode.y + 55,
+      status: deriveNodeStatus(selectedNode),
+    };
+    const relation = inferEdgeRelation(selectedNode, duplicate);
+    const edge: StrategyEdge = {
+      id: uid("edge"),
+      source: selectedNode.id,
+      target: duplicate.id,
+      relation: "sequence",
+      label:
+        relation.relation === "sequence"
+          ? relation.label
+          : "Dilanjutkan oleh variasi langkah ini",
+    };
+    const previous = {
+      nodes: deepCopy(document.nodes),
+      edges: deepCopy(document.edges),
+    };
+    setHistory((items) => [...items.slice(-29), previous]);
+    setDocument((current) => ({
+      ...current,
+      nodes: [...current.nodes, duplicate],
+      edges: [...current.edges, edge],
+    }));
+    setSelectedNodeId(duplicate.id);
+    setFuture([]);
+    setNotice("Simpul diduplikasi dan dihubungkan otomatis.");
+  }
+
+  function splitSelected() {
+    if (!selectedNode) return;
+    const baseX = Math.max(40, selectedNode.x - 870);
+    const baseY = selectedNode.y + 190;
+    const titles = ["Siapkan prasyarat", "Jalankan inti", "Validasi hasil"];
+    const details = [
+      `Siapkan input, sumber daya, dan kondisi sebelum "${selectedNode.title}".`,
+      `Kerjakan bagian utama yang menghasilkan progres untuk "${selectedNode.title}".`,
+      `Uji kualitas dan bukti selesai sebelum "${selectedNode.title}" dinyatakan tercapai.`,
+    ];
+    const children = titles.map(
+      (title, index): StrategyNode => ({
+        id: uid(`node-${index + 1}`),
+        title,
+        detail: details[index],
+        kind: index === 2 ? "milestone" : "task",
+        x: baseX + index * 290,
+        y: baseY,
+        duration: Math.max(1, Math.round(selectedNode.duration / 3)),
+        effort: Math.max(1, Math.round(selectedNode.effort / 2)),
+        impact: Math.max(1, selectedNode.impact - 1 + (index === 2 ? 1 : 0)),
+        confidence: Math.max(35, selectedNode.confidence - 5 + index * 5),
+        status: "warning",
+      }),
+    );
+    const splitEdges: StrategyEdge[] = [
+      {
+        id: uid("edge"),
+        source: children[0].id,
+        target: children[1].id,
+        relation: "sequence",
+        label: "Persiapan membuka pelaksanaan",
+      },
+      {
+        id: uid("edge"),
+        source: children[1].id,
+        target: children[2].id,
+        relation: "validation",
+        label: "Hasil pelaksanaan harus divalidasi",
+      },
+      {
+        id: uid("edge"),
+        source: children[2].id,
+        target: selectedNode.id,
+        relation: "contribution",
+        label: "Validasi menyelesaikan simpul induk",
+      },
+    ];
+    setHistory((items) => [
+      ...items.slice(-29),
+      { nodes: deepCopy(document.nodes), edges: deepCopy(document.edges) },
+    ]);
+    setDocument((current) => ({
+      ...current,
+      nodes: [...current.nodes, ...children],
+      edges: [...current.edges, ...splitEdges],
+    }));
+    setFuture([]);
+    setNotice("Simpul diurai menjadi tiga langkah deterministik.");
   }
 
   function deleteSelected() {
@@ -475,52 +774,30 @@ export default function Home() {
       nodes: deepCopy(document.nodes),
       edges: deepCopy(document.edges),
     };
-    const levels = new Map<string, number>();
-    const incoming = new Map<string, number>();
-    document.nodes.forEach((node) => incoming.set(node.id, 0));
-    document.edges.forEach((edge) =>
-      incoming.set(edge.target, (incoming.get(edge.target) ?? 0) + 1),
-    );
-    let frontier = document.nodes
-      .filter((node) => incoming.get(node.id) === 0)
-      .map((node) => node.id);
-    let level = 0;
-    const seen = new Set<string>();
-    while (frontier.length) {
-      const next: string[] = [];
-      frontier.forEach((id) => {
-        if (seen.has(id)) return;
-        seen.add(id);
-        levels.set(id, level);
-        document.edges
-          .filter((edge) => edge.source === id)
-          .forEach((edge) => next.push(edge.target));
-      });
-      frontier = next;
-      level += 1;
-    }
-    document.nodes.forEach((node) => {
-      if (!levels.has(node.id)) levels.set(node.id, level);
-    });
-    const grouped = new Map<number, StrategyNode[]>();
-    document.nodes.forEach((node) => {
-      const key = levels.get(node.id) ?? 0;
-      grouped.set(key, [...(grouped.get(key) ?? []), node]);
-    });
-    const arranged = document.nodes.map((node) => {
-      const nodeLevel = levels.get(node.id) ?? 0;
-      const siblings = grouped.get(nodeLevel) ?? [node];
-      const index = siblings.findIndex((item) => item.id === node.id);
-      return {
-        ...node,
-        x: 70 + nodeLevel * 285,
-        y: 80 + index * 170,
-      };
-    });
+    const arranged = arrangeStrategyNodes(document.nodes, document.edges);
     setHistory((items) => [...items.slice(-29), previous]);
     setDocument((current) => ({ ...current, nodes: arranged }));
+    lastCommitted.current = {
+      nodes: deepCopy(arranged),
+      edges: deepCopy(document.edges),
+    };
     setFuture([]);
     setNotice("Peta dirapikan berdasarkan dependensi.");
+  }
+
+  async function importStrategyText(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setPrompt(text);
+      setComposerOpen(true);
+      setNotice(`${file.name} dimuat. Teks siap disempurnakan oleh agent.`);
+    } catch {
+      setNotice("File teks tidak dapat dibaca.");
+    } finally {
+      event.target.value = "";
+    }
   }
 
   async function generateStrategy(useDemo = false) {
@@ -539,7 +816,12 @@ export default function Home() {
     try {
       if (useDemo) {
         await new Promise((resolve) => setTimeout(resolve, 3200));
-        setDocument(deepCopy(DEMO_STRATEGY));
+        const demo = deepCopy(DEMO_STRATEGY);
+        setDocument(demo);
+        lastCommitted.current = {
+          nodes: deepCopy(demo.nodes),
+          edges: deepCopy(demo.edges),
+        };
         setNotice("Mode demo siap. Semua simpul dapat diedit.");
       } else {
         sessionStorage.setItem("simpul-openrouter-key", apiKey);
@@ -567,14 +849,23 @@ export default function Home() {
             throw new Error(data.message || "Pembuatan strategi gagal.");
           }
         }
-        const next = normalizeStrategy(data.strategy, prompt, planKind);
+        const next = normalizeStrategy(data.strategy, prompt, planKind, {
+          arrange: true,
+        });
         setDocument(next);
+        lastCommitted.current = {
+          nodes: deepCopy(next.nodes),
+          edges: deepCopy(next.edges),
+        };
         setSemanticAudit(data.semanticAudit);
-        setNotice("Empat agent selesai menyusun dan mengaudit peta.");
+        setNotice(
+          `Empat agent selesai menyusun ${next.nodes.length} simpul dan ${next.edges.length} relasi.`,
+        );
       }
       setHistory([]);
       setFuture([]);
       setSelectedNodeId(null);
+      setSelectedEdgeId(null);
       setConnectSource(null);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Pembuatan strategi gagal.");
@@ -593,6 +884,21 @@ export default function Home() {
       ? [...semanticAudit.insights, ...localAudit.insights].slice(0, 4)
       : localAudit.insights,
   };
+
+  async function exportPdf() {
+    setPdfBusy(true);
+    try {
+      const { downloadStrategyPdf } = await import("./lib/export-pdf.js");
+      await downloadStrategyPdf(document, displayAudit);
+      setNotice("PDF strategy map dan audit berhasil dibuat.");
+    } catch (error) {
+      setNotice(
+        error instanceof Error ? error.message : "PDF tidak dapat dibuat.",
+      );
+    } finally {
+      setPdfBusy(false);
+    }
+  }
 
   return (
     <main className="app-shell">
@@ -679,20 +985,35 @@ export default function Home() {
           <button className="tool-button" onClick={() => setSourcesOpen(true)}>
             <span>◫</span> {document.sources.length} sumber
           </button>
+          <button className="tool-button" onClick={exportPdf} disabled={pdfBusy}>
+            <span>PDF</span> {pdfBusy ? "Menyusun..." : "Ekspor"}
+          </button>
           {connectSource && <span className="connect-hint">Pilih tujuan · Esc batal</span>}
         </div>
 
-        <div className="canvas-wrap">
+        <div
+          className="canvas-wrap"
+          ref={canvasWrapRef}
+          onPointerDown={handleCanvasPointerDown}
+          onPointerMove={handleCanvasPointerMove}
+          onPointerUp={handleCanvasPointerEnd}
+          onPointerCancel={handleCanvasPointerEnd}
+          onWheel={handleCanvasWheel}
+        >
           <div className="canvas-grid" />
           <div
             className="strategy-canvas"
             style={{
               transform: `scale(${zoom})`,
-              width: 1200,
-              height: 760,
+              width: canvasSize.width,
+              height: canvasSize.height,
             }}
           >
-            <svg className="edge-layer" width="1200" height="760" aria-hidden="true">
+            <svg
+              className="edge-layer"
+              width={canvasSize.width}
+              height={canvasSize.height}
+            >
               {document.edges.map((edge) => {
                 const source = document.nodes.find((node) => node.id === edge.source);
                 const target = document.nodes.find((node) => node.id === edge.target);
@@ -703,11 +1024,59 @@ export default function Home() {
                 const y2 = target.y + 72;
                 const bend = Math.max(70, Math.abs(x2 - x1) * 0.48);
                 const path = `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+                const midX = (x1 + x2) / 2;
+                const midY = (y1 + y2) / 2;
+                const edgeText = edge.label || EDGE_RELATION_LABEL[edge.relation];
+                const shortLabel =
+                  edgeText.length > 34 ? `${edgeText.slice(0, 32)}...` : edgeText;
+                const labelWidth = Math.min(
+                  220,
+                  Math.max(92, shortLabel.length * 5.4 + 20),
+                );
                 return (
-                  <g key={edge.id}>
-                    <path className="edge-hit" d={path} onClick={() => removeEdge(edge.id)} />
+                  <g
+                    key={edge.id}
+                    className={`edge-group relation-${edge.relation} ${
+                      selectedEdgeId === edge.id ? "is-selected" : ""
+                    }`}
+                  >
+                    <path
+                      className="edge-hit"
+                      d={path}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Edit hubungan: ${edgeText}`}
+                      onClick={() => {
+                        setSelectedNodeId(null);
+                        setSelectedEdgeId(edge.id);
+                        setInspectorOpen(true);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          setSelectedNodeId(null);
+                          setSelectedEdgeId(edge.id);
+                          setInspectorOpen(true);
+                        }
+                      }}
+                    />
                     <path className="edge-line" d={path} />
                     <circle className="edge-dot" cx={x2} cy={y2} r="4" />
+                    <rect
+                      className="edge-label-bg"
+                      x={midX - labelWidth / 2}
+                      y={midY - 13}
+                      width={labelWidth}
+                      height="26"
+                      rx="7"
+                    />
+                    <text
+                      className="edge-label-text"
+                      x={midX}
+                      y={midY + 3}
+                      textAnchor="middle"
+                    >
+                      {shortLabel}
+                    </text>
                   </g>
                 );
               })}
@@ -721,6 +1090,7 @@ export default function Home() {
                 zoom={zoom}
                 onSelect={() => {
                   setSelectedNodeId(node.id);
+                  setSelectedEdgeId(null);
                   setInspectorOpen(true);
                 }}
                 onConnect={() => handleConnect(node.id)}
@@ -735,10 +1105,9 @@ export default function Home() {
             <span>{document.nodes.length} simpul · {document.edges.length} koneksi</span>
           </div>
 
-          <div className="zoom-controls">
-            <button onClick={() => setZoom((value) => Math.max(0.55, value - 0.1))} aria-label="Perkecil">−</button>
-            <span>{Math.round(zoom * 100)}%</span>
-            <button onClick={() => setZoom((value) => Math.min(1.35, value + 0.1))} aria-label="Perbesar">＋</button>
+          <div className="zoom-indicator" aria-live="polite">
+            <strong>{Math.round(zoom * 100)}%</strong>
+            <span>Pinch untuk zoom · geser untuk menjelajah</span>
           </div>
         </div>
       </section>
@@ -797,12 +1166,17 @@ export default function Home() {
         </button>
       )}
 
-      {inspectorOpen && selectedNode && (
+      {inspectorOpen && (selectedNode || selectedEdge) && (
         <aside className="inspector">
+          {selectedNode && (
+            <>
           <div className="panel-header pale">
             <div>
               <span className="eyebrow">EDIT SIMPUL</span>
               <h2>{selectedNode.title}</h2>
+              <span className="priority-chip">
+                Prioritas deterministik {nodePriorityScore(selectedNode)}/100
+              </span>
             </div>
             <button className="panel-close dark" onClick={() => setInspectorOpen(false)}>×</button>
           </div>
@@ -822,21 +1196,37 @@ export default function Home() {
               onBlur={commit}
             />
           </label>
-          <label>
-            Jenis simpul
-            <select
-              value={selectedNode.kind}
-              onChange={(event) => {
-                updateSelected({ kind: event.target.value as NodeKind });
-                setTimeout(commit, 0);
-              }}
-            >
-              {Object.entries(KIND_LABEL).map(([value, label]) => (
-                <option value={value} key={value}>{label}</option>
-              ))}
-            </select>
-          </label>
           <div className="field-row">
+            <label>
+              Jenis simpul
+              <select
+                value={selectedNode.kind}
+                onChange={(event) => {
+                  updateSelected({ kind: event.target.value as NodeKind });
+                  setTimeout(commit, 0);
+                }}
+              >
+                {Object.entries(KIND_LABEL).map(([value, label]) => (
+                  <option value={value} key={value}>{label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Status
+              <select
+                value={selectedNode.status ?? "ready"}
+                onChange={(event) => {
+                  updateSelected({ status: event.target.value as NodeStatus });
+                  setTimeout(commit, 0);
+                }}
+              >
+                <option value="ready">Siap</option>
+                <option value="warning">Perlu cek</option>
+                <option value="blocked">Terhambat</option>
+              </select>
+            </label>
+          </div>
+          <div className="field-row three">
             <label>
               Durasi (jam)
               <input
@@ -858,6 +1248,17 @@ export default function Home() {
                 onBlur={commit}
               />
             </label>
+            <label>
+              Dampak (1–10)
+              <input
+                type="number"
+                min="1"
+                max="10"
+                value={selectedNode.impact}
+                onChange={(event) => updateSelected({ impact: Number(event.target.value) })}
+                onBlur={commit}
+              />
+            </label>
           </div>
           <label className="range-label">
             <span>Keyakinan <b>{selectedNode.confidence}%</b></span>
@@ -870,8 +1271,20 @@ export default function Home() {
               onPointerUp={commit}
             />
           </label>
+          <div className="inspector-actions">
+            <button
+              onClick={() => {
+                updateSelected({ status: deriveNodeStatus(selectedNode) });
+                setTimeout(commit, 0);
+              }}
+            >
+              Status otomatis
+            </button>
+            <button onClick={duplicateSelected}>Duplikasi</button>
+            <button onClick={splitSelected}>Urai 3 langkah</button>
+          </div>
           <div className="dependencies">
-            <h3>Dependensi</h3>
+            <h3>Relasi simpul</h3>
             {document.edges
               .filter((edge) => edge.source === selectedNode.id || edge.target === selectedNode.id)
               .map((edge) => {
@@ -879,13 +1292,83 @@ export default function Home() {
                 const other = document.nodes.find((node) => node.id === otherId);
                 return (
                   <div key={edge.id}>
-                    <span>{edge.target === selectedNode.id ? "Dari" : "Ke"} · {other?.title}</span>
-                    <button onClick={() => removeEdge(edge.id)}>Lepas</button>
+                    <span>{EDGE_RELATION_LABEL[edge.relation]} · {other?.title}</span>
+                    <button
+                      onClick={() => {
+                        setSelectedNodeId(null);
+                        setSelectedEdgeId(edge.id);
+                      }}
+                    >
+                      Edit
+                    </button>
                   </div>
                 );
               })}
           </div>
           <button className="danger-button" onClick={deleteSelected}>Hapus simpul</button>
+            </>
+          )}
+          {selectedEdge && (
+            <>
+              <div className="panel-header pale">
+                <div>
+                  <span className="eyebrow">EDIT GARIS HUBUNGAN</span>
+                  <h2>{EDGE_RELATION_LABEL[selectedEdge.relation]}</h2>
+                </div>
+                <button className="panel-close dark" onClick={() => setInspectorOpen(false)}>×</button>
+              </div>
+              <div className="relation-summary">
+                <strong>
+                  {document.nodes.find((node) => node.id === selectedEdge.source)?.title}
+                </strong>
+                <span>menuju</span>
+                <strong>
+                  {document.nodes.find((node) => node.id === selectedEdge.target)?.title}
+                </strong>
+              </div>
+              <label>
+                Fungsi hubungan
+                <select
+                  value={selectedEdge.relation}
+                  onChange={(event) => {
+                    updateSelectedEdge({
+                      relation: event.target.value as EdgeRelation,
+                    });
+                    setTimeout(commit, 0);
+                  }}
+                >
+                  {Object.entries(EDGE_RELATION_LABEL).map(([value, label]) => (
+                    <option value={value} key={value}>{label}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Keterangan garis
+                <textarea
+                  value={selectedEdge.label}
+                  onChange={(event) => updateSelectedEdge({ label: event.target.value })}
+                  onBlur={commit}
+                  placeholder="Jelaskan mengapa kedua simpul berhubungan..."
+                />
+              </label>
+              <button
+                className="smart-relation-button"
+                onClick={() => {
+                  const source = document.nodes.find((node) => node.id === selectedEdge.source);
+                  const target = document.nodes.find((node) => node.id === selectedEdge.target);
+                  if (source && target) {
+                    updateSelectedEdge(inferEdgeRelation(source, target));
+                    setTimeout(commit, 0);
+                  }
+                }}
+              >
+                Tulis keterangan otomatis
+              </button>
+              <button className="danger-button" onClick={() => removeEdge(selectedEdge.id)}>
+                Hapus garis hubungan
+              </button>
+            </>
+          )}
         </aside>
       )}
 
@@ -922,8 +1405,8 @@ export default function Home() {
           <section className="composer">
             <button className="modal-x" onClick={() => setComposerOpen(false)}>×</button>
             <span className="composer-kicker"><i /> EMPAT AGENT, SATU STRATEGI</span>
-            <h1>Apa yang ingin Anda capai?</h1>
-            <p>SIMPUL akan meneliti konteks, membangun peta, dan menyiapkan mesin penilaian khusus.</p>
+            <h1>Tuangkan strategi selengkap mungkin.</h1>
+            <p>Tempel ide singkat, rencana panjang, atau strategi terperinci. Agent akan menyempurnakan teks, memecahnya menjadi simpul sebanyak yang diperlukan, lalu mengaudit hasilnya.</p>
             <div className="plan-options">
               {PLAN_OPTIONS.map((option) => (
                 <button
@@ -938,18 +1421,28 @@ export default function Home() {
               ))}
             </div>
             <label className="prompt-field">
-              <span>Jelaskan tujuan, batas waktu, dan kondisi penting</span>
+              <span>Teks strategi utama · tanpa batas karakter aplikasi</span>
               <textarea
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
-                placeholder="Contoh: Susun strategi 6 minggu untuk…"
+                placeholder="Tuliskan seluruh inspirasi, tujuan, batas waktu, sumber daya, masalah, subgoal, risiko, ide alternatif, dan detail lain yang ingin dipertahankan dalam peta..."
                 autoFocus
               />
-              <small>{prompt.length}/3000</small>
+              <small>{prompt.length.toLocaleString("id-ID")} karakter</small>
             </label>
+            <input
+              ref={textImportRef}
+              className="visually-hidden"
+              type="file"
+              accept=".txt,.md,text/plain,text/markdown"
+              onChange={importStrategyText}
+            />
             <div className="composer-actions">
+              <button className="demo-button" onClick={() => textImportRef.current?.click()}>
+                Impor .txt / .md
+              </button>
               <button className="demo-button" onClick={() => generateStrategy(true)}>Coba mode demo</button>
-              <button className="generate-button" onClick={() => generateStrategy(false)} disabled={prompt.trim().length < 12}>
+              <button className="generate-button" onClick={() => generateStrategy(false)} disabled={!prompt.trim()}>
                 Buat peta strategi <span>→</span>
               </button>
             </div>

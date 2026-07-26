@@ -23,6 +23,7 @@ async function callModel({
   user,
   schema,
   search = false,
+  maxTokens = 5000,
 }: {
   key: string;
   models: readonly string[];
@@ -30,6 +31,7 @@ async function callModel({
   user: string;
   schema: Record<string, unknown>;
   search?: boolean;
+  maxTokens?: number;
 }) {
   const failures: string[] = [];
 
@@ -66,7 +68,7 @@ async function callModel({
           { role: "system", content: system },
           { role: "user", content: user },
         ],
-        max_tokens: 5000,
+        max_tokens: maxTokens,
         response_format: {
           type: "json_schema",
           json_schema: {
@@ -75,6 +77,7 @@ async function callModel({
             schema,
           },
         },
+        plugins: [{ id: "response-healing" }],
         provider: { require_parameters: true },
         ...(search ? searchParameters : {}),
       }),
@@ -190,8 +193,6 @@ const graphSchema = {
     title: { type: "string" },
     nodes: {
       type: "array",
-      minItems: 5,
-      maxItems: 14,
       items: {
         type: "object",
         properties: {
@@ -234,9 +235,20 @@ const graphSchema = {
           id: { type: "string" },
           source: { type: "string" },
           target: { type: "string" },
+          relation: {
+            type: "string",
+            enum: [
+              "dependency",
+              "sequence",
+              "enabler",
+              "validation",
+              "risk_control",
+              "contribution",
+            ],
+          },
           label: { type: "string" },
         },
-        required: ["id", "source", "target", "label"],
+        required: ["id", "source", "target", "relation", "label"],
         additionalProperties: false,
       },
     },
@@ -267,9 +279,9 @@ export async function POST(request: Request) {
     const body = await request.json();
     const prompt = String(body.prompt || "").trim();
     const kind = ["daily", "flow", "goal"].includes(body.kind) ? body.kind : "goal";
-    if (prompt.length < 12 || prompt.length > 3000) {
+    if (!prompt) {
       return NextResponse.json(
-        { error: "INVALID_PROMPT", message: "Jelaskan tujuan dalam 12–3000 karakter." },
+        { error: "INVALID_PROMPT", message: "Tuliskan strategi atau tujuan yang ingin dipetakan." },
         { status: 400 },
       );
     }
@@ -278,6 +290,7 @@ export async function POST(request: Request) {
       key,
       models: MODEL_CHAINS.thinker,
       search: true,
+      maxTokens: 7000,
       schema: thinkerSchema,
       system:
         "Anda adalah Thinking & Research Agent. Teliti tujuan pengguna memakai sumber primer/tepercaya. Pisahkan fakta, asumsi, batasan, risiko, dan indikator keberhasilan. Jangan tampilkan chain-of-thought. Keluarkan hanya JSON sesuai schema, dalam Bahasa Indonesia yang jelas untuk pengguna awam.",
@@ -287,6 +300,7 @@ export async function POST(request: Request) {
     const worker = await callModel({
       key,
       models: MODEL_CHAINS.worker,
+      maxTokens: 6000,
       schema: rubricSchema,
       system:
         "Anda adalah Worker & Evaluation-Engine Agent. Rancang rubrik penilaian kasus-spesifik yang dapat dihitung deterministik. Bobot harus berjumlah tepat 1. Gunakan empat dimensi: optimality, timeEfficiency, success, effortReturn. Tentukan horizon, asumsi, hard constraints, dan catatan audit. Keluarkan hanya JSON.",
@@ -296,9 +310,10 @@ export async function POST(request: Request) {
     const architect = await callModel({
       key,
       models: MODEL_CHAINS.architect,
+      maxTokens: 12000,
       schema: graphSchema,
       system:
-        "Anda adalah Nodes & Concept Map Architect. Ubah riset dan rubrik menjadi directed acyclic strategy graph yang ringkas dan dapat dieksekusi. Gunakan 5–14 simpul, judul maksimal 5 kata, detail konkret, koordinat dalam kanvas 1200x760, durasi dalam jam, effort dan impact 1–10, confidence 0–100. Semua id unik. Sisakan ruang antar simpul dan pastikan setiap simpul terhubung ke hasil. Keluarkan hanya JSON.",
+        "Anda adalah Nodes & Concept Map Architect. Ubah seluruh strategi terperinci, riset, dan rubrik menjadi directed strategy graph yang dapat dieksekusi. Tidak ada batas jumlah simpul: buat sebanyak yang diperlukan untuk mempertahankan setiap fase, subgoal, keputusan, risiko, mitigasi, validasi, dan hasil penting dari teks pengguna. Untuk input kompleks, lakukan dekomposisi mendalam dan jangan memadatkan detail penting hanya demi jumlah simpul sedikit. Judul maksimal 6 kata, detail konkret, koordinat boleh meluas tanpa batas kanvas tetap, durasi dalam jam, effort dan impact 1–10, confidence 0–100. Semua id unik. Setiap garis wajib memiliki relation dan label yang menjelaskan fungsi hubungan secara spesifik. Pastikan setiap simpul berkontribusi pada hasil. Keluarkan hanya JSON.",
       user: JSON.stringify({
         kind,
         prompt,

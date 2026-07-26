@@ -54,6 +54,7 @@ export async function POST(request: Request) {
               },
             },
           },
+          plugins: [{ id: "response-healing" }],
           provider: { require_parameters: true },
         }),
       });
@@ -63,11 +64,19 @@ export async function POST(request: Request) {
       }
       const data = await response.json();
       const content = data.choices?.[0]?.message?.content;
-      return NextResponse.json({
-        ...(typeof content === "string" ? JSON.parse(content) : content),
-        model: data.model || model,
-        usage: data.usage,
-      });
+      if (!content) {
+        failures.push(`${model}: respons kosong`);
+        continue;
+      }
+      try {
+        return NextResponse.json({
+          ...(typeof content === "string" ? JSON.parse(content) : content),
+          model: data.model || model,
+          usage: data.usage,
+        });
+      } catch {
+        failures.push(`${model}: JSON tidak valid`);
+      }
     }
     throw new Error(`Audit gagal. ${failures.join(" | ")}`);
   } catch (error) {

@@ -1,5 +1,22 @@
 export type PlanKind = "daily" | "flow" | "goal";
 export type NodeKind = "goal" | "milestone" | "task" | "decision" | "risk";
+export type NodeStatus = "ready" | "warning" | "blocked";
+export type EdgeRelation =
+  | "dependency"
+  | "sequence"
+  | "enabler"
+  | "validation"
+  | "risk_control"
+  | "contribution";
+
+export const EDGE_RELATION_LABEL: Record<EdgeRelation, string> = {
+  dependency: "Prasyarat",
+  sequence: "Urutan",
+  enabler: "Pengungkit",
+  validation: "Validasi",
+  risk_control: "Kontrol risiko",
+  contribution: "Kontribusi",
+};
 
 export type StrategyNode = {
   id: string;
@@ -12,14 +29,15 @@ export type StrategyNode = {
   effort: number;
   impact: number;
   confidence: number;
-  status?: "ready" | "warning" | "blocked";
+  status?: NodeStatus;
 };
 
 export type StrategyEdge = {
   id: string;
   source: string;
   target: string;
-  label?: string;
+  relation: EdgeRelation;
+  label: string;
 };
 
 export type Source = {
@@ -231,22 +249,144 @@ export const DEMO_STRATEGY: StrategyDocument = {
     },
   ],
   edges: [
-    { id: "e1", source: "requirements", target: "gap" },
-    { id: "e2", source: "gap", target: "portfolio" },
-    { id: "e3", source: "requirements", target: "mentor" },
-    { id: "e4", source: "gap", target: "essay" },
-    { id: "e5", source: "portfolio", target: "review" },
-    { id: "e6", source: "essay", target: "review" },
-    { id: "e7", source: "portfolio", target: "risk" },
-    { id: "e8", source: "mentor", target: "submit" },
-    { id: "e9", source: "review", target: "submit" },
-    { id: "e10", source: "risk", target: "submit" },
-    { id: "e11", source: "submit", target: "goal" },
+    { id: "e1", source: "requirements", target: "gap", relation: "validation", label: "Menjadi dasar audit" },
+    { id: "e2", source: "gap", target: "portfolio", relation: "enabler", label: "Menentukan bukti prioritas" },
+    { id: "e3", source: "requirements", target: "mentor", relation: "dependency", label: "Menentukan kebutuhan rekomendasi" },
+    { id: "e4", source: "gap", target: "essay", relation: "enabler", label: "Mengarahkan narasi" },
+    { id: "e5", source: "portfolio", target: "review", relation: "validation", label: "Bukti diuji reviewer" },
+    { id: "e6", source: "essay", target: "review", relation: "validation", label: "Narasi diuji reviewer" },
+    { id: "e7", source: "portfolio", target: "risk", relation: "risk_control", label: "Memunculkan risiko keterlambatan" },
+    { id: "e8", source: "mentor", target: "submit", relation: "dependency", label: "Rekomendasi wajib tersedia" },
+    { id: "e9", source: "review", target: "submit", relation: "sequence", label: "Finalisasi setelah review" },
+    { id: "e10", source: "risk", target: "submit", relation: "risk_control", label: "Risiko harus dikendalikan" },
+    { id: "e11", source: "submit", target: "goal", relation: "contribution", label: "Menghasilkan aplikasi kompetitif" },
   ],
 };
 
 function clamp(value: number, min = 0, max = 100) {
   return Math.min(max, Math.max(min, value));
+}
+
+export function deriveNodeStatus(node: StrategyNode): NodeStatus {
+  if (
+    node.confidence < 35 ||
+    (node.kind === "risk" && node.impact >= 8 && node.confidence < 55)
+  ) {
+    return "blocked";
+  }
+  if (
+    node.confidence < 68 ||
+    (node.effort >= 8 && node.impact <= 6) ||
+    node.duration <= 0
+  ) {
+    return "warning";
+  }
+  return "ready";
+}
+
+export function nodePriorityScore(node: StrategyNode) {
+  const expectedImpact = node.impact * (node.confidence / 100);
+  const cost = Math.max(1, node.effort * 0.7 + Math.sqrt(Math.max(0, node.duration)));
+  return Math.round(clamp(38 + (expectedImpact / cost) * 13));
+}
+
+export function inferEdgeRelation(
+  source: StrategyNode,
+  target: StrategyNode,
+): Pick<StrategyEdge, "relation" | "label"> {
+  if (source.kind === "risk" || target.kind === "risk") {
+    return {
+      relation: "risk_control",
+      label:
+        source.kind === "risk"
+          ? "Risiko harus dikendalikan sebelum langkah ini"
+          : "Langkah ini memunculkan risiko yang perlu dikendalikan",
+    };
+  }
+  if (target.kind === "decision") {
+    return { relation: "validation", label: "Memberi bukti untuk keputusan" };
+  }
+  if (source.kind === "decision") {
+    return { relation: "enabler", label: "Keputusan ini mengarahkan langkah berikutnya" };
+  }
+  if (target.kind === "goal") {
+    return { relation: "contribution", label: "Berkontribusi langsung pada hasil" };
+  }
+  if (source.kind === "milestone" || target.kind === "milestone") {
+    return { relation: "sequence", label: "Membuka tahap strategi berikutnya" };
+  }
+  return { relation: "dependency", label: "Menjadi prasyarat untuk langkah berikutnya" };
+}
+
+export function arrangeStrategyNodes(
+  nodes: StrategyNode[],
+  edges: StrategyEdge[],
+): StrategyNode[] {
+  if (!nodes.length) return [];
+  const incoming = new Map(nodes.map((node) => [node.id, 0]));
+  const outgoing = new Map(nodes.map((node) => [node.id, [] as string[]]));
+  edges.forEach((edge) => {
+    if (!incoming.has(edge.source) || !incoming.has(edge.target)) return;
+    incoming.set(edge.target, (incoming.get(edge.target) ?? 0) + 1);
+    outgoing.get(edge.source)?.push(edge.target);
+  });
+
+  const levels = new Map<string, number>();
+  const queue = nodes
+    .filter((node) => incoming.get(node.id) === 0)
+    .map((node) => node.id);
+  queue.forEach((id) => levels.set(id, 0));
+  let cursor = 0;
+  while (cursor < queue.length) {
+    const id = queue[cursor++];
+    const nextLevel = (levels.get(id) ?? 0) + 1;
+    for (const next of outgoing.get(id) ?? []) {
+      levels.set(next, Math.max(levels.get(next) ?? 0, nextLevel));
+      incoming.set(next, (incoming.get(next) ?? 1) - 1);
+      if (incoming.get(next) === 0) queue.push(next);
+    }
+  }
+
+  const fallbackLevel = Math.max(0, ...levels.values()) + 1;
+  nodes.forEach((node) => {
+    if (!levels.has(node.id)) levels.set(node.id, fallbackLevel);
+  });
+
+  const grouped = new Map<number, StrategyNode[]>();
+  nodes.forEach((node) => {
+    const level = levels.get(node.id) ?? 0;
+    grouped.set(level, [...(grouped.get(level) ?? []), node]);
+  });
+
+  const levelStart = new Map<number, number>();
+  let nextX = 70;
+  [...grouped.keys()]
+    .sort((a, b) => a - b)
+    .forEach((level) => {
+      levelStart.set(level, nextX);
+      const subColumns = Math.max(1, Math.ceil((grouped.get(level)?.length ?? 1) / 6));
+      nextX += subColumns * 290;
+    });
+
+  return nodes.map((node) => {
+    const level = levels.get(node.id) ?? 0;
+    const siblings = grouped.get(level) ?? [node];
+    const index = siblings.findIndex((item) => item.id === node.id);
+    const subColumn = Math.floor(index / 6);
+    const row = index % 6;
+    return {
+      ...node,
+      x: (levelStart.get(level) ?? 70) + subColumn * 290,
+      y: 80 + row * 180,
+    };
+  });
+}
+
+export function getStrategyCanvasSize(nodes: StrategyNode[]) {
+  return {
+    width: Math.max(1200, ...nodes.map((node) => node.x + 330)),
+    height: Math.max(760, ...nodes.map((node) => node.y + 250)),
+  };
 }
 
 function countCycles(nodes: StrategyNode[], edges: StrategyEdge[]) {
@@ -274,6 +414,7 @@ function countCycles(nodes: StrategyNode[], edges: StrategyEdge[]) {
 }
 
 function calculateCriticalPath(nodes: StrategyNode[], edges: StrategyEdge[]) {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const incoming = new Map<string, number>();
   const outgoing = new Map<string, string[]>();
   const distance = new Map<string, number>();
@@ -292,8 +433,8 @@ function calculateCriticalPath(nodes: StrategyNode[], edges: StrategyEdge[]) {
     const current = queue.shift()!;
     seen += 1;
     for (const next of outgoing.get(current) ?? []) {
-      const currentNode = nodes.find((node) => node.id === current);
-      const nextNode = nodes.find((node) => node.id === next);
+      const currentNode = nodeById.get(current);
+      const nextNode = nodeById.get(next);
       if (currentNode && nextNode) {
         distance.set(
           next,
@@ -352,23 +493,33 @@ export function auditStrategy(
   const graphDensity = edges.length / Math.max(1, nodes.length - 1);
   const horizonHours = Math.max(8, rubric.horizonDays * 1.2);
   const timeLoad = criticalPathHours / horizonHours;
+  const meanEffort = totalEffort / nodes.length;
   const returnRatio =
     nodes.reduce((sum, node) => sum + node.impact * node.confidence / 100, 0) /
     Math.max(totalEffort, 1);
+  const isolatedRatio = isolated / nodes.length;
+  const rootRatio = roots / nodes.length;
+  const sinkRatio = sinks / nodes.length;
+  const cycleRatio = cycleCount / nodes.length;
 
   const optimality = clamp(
-    91 - cycleCount * 22 - isolated * 10 - Math.abs(1.35 - graphDensity) * 10,
+    93 -
+      cycleRatio * 100 -
+      isolatedRatio * 52 -
+      Math.abs(1.35 - graphDensity) * 9,
   );
   const timeEfficiency = clamp(
-    96 - Math.max(0, timeLoad - 0.78) * 70 - Math.max(0, roots - 3) * 3,
+    96 - Math.max(0, timeLoad - 0.78) * 70 - Math.max(0, rootRatio - 0.32) * 18,
   );
   const success = clamp(
     meanConfidence * 0.72 +
       meanImpact * 2.4 -
-      cycleCount * 14 -
-      Math.max(0, sinks - 2) * 2,
+      cycleRatio * 80 -
+      Math.max(0, sinkRatio - 0.24) * 22,
   );
-  const effortReturn = clamp(42 + returnRatio * 15 - Math.max(0, totalEffort - 60) * 0.5);
+  const effortReturn = clamp(
+    42 + returnRatio * 15 - Math.max(0, meanEffort - 7) * 4,
+  );
   const weights = rubric.weights;
   const weightTotal = Math.max(
     0.0001,
@@ -444,18 +595,45 @@ export function normalizeStrategy(
   input: Partial<StrategyDocument>,
   prompt: string,
   kind: PlanKind,
+  options: { arrange?: boolean } = {},
 ): StrategyDocument {
   const now = new Date().toISOString();
-  const nodes = (input.nodes ?? []).map((node, index) => ({
-    ...node,
-    id: node.id || `node-${index + 1}`,
-    x: Number.isFinite(node.x) ? node.x : 120 + (index % 3) * 310,
-    y: Number.isFinite(node.y) ? node.y : 100 + Math.floor(index / 3) * 190,
-  })) as StrategyNode[];
+  const rawNodes = (input.nodes ?? []).map((node, index) => {
+    const normalized = {
+      ...node,
+      id: node.id || `node-${index + 1}`,
+      title: node.title || `Langkah ${index + 1}`,
+      detail: node.detail || "Jelaskan hasil konkret dari langkah ini.",
+      kind: node.kind || "task",
+      x: Number.isFinite(node.x) ? Math.max(16, Number(node.x)) : 120 + (index % 3) * 310,
+      y: Number.isFinite(node.y) ? Math.max(16, Number(node.y)) : 100 + Math.floor(index / 3) * 190,
+      duration: Math.max(0, Number(node.duration) || 0),
+      effort: clamp(Number(node.effort) || 1, 1, 10),
+      impact: clamp(Number(node.impact) || 1, 1, 10),
+      confidence: clamp(Number(node.confidence) || 0),
+      status: node.status,
+    } as StrategyNode;
+    return { ...normalized, status: normalized.status || deriveNodeStatus(normalized) };
+  });
+  const nodes = options.arrange ? arrangeStrategyNodes(rawNodes, input.edges ?? []) : rawNodes;
   const ids = new Set(nodes.map((node) => node.id));
-  const edges = (input.edges ?? []).filter(
-    (edge) => ids.has(edge.source) && ids.has(edge.target) && edge.source !== edge.target,
-  ) as StrategyEdge[];
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const edges = (input.edges ?? [])
+    .filter(
+      (edge) => ids.has(edge.source) && ids.has(edge.target) && edge.source !== edge.target,
+    )
+    .map((edge, index) => {
+      const inferred = inferEdgeRelation(
+        nodeById.get(edge.source)!,
+        nodeById.get(edge.target)!,
+      );
+      return {
+        ...edge,
+        id: edge.id || `edge-${index + 1}`,
+        relation: edge.relation || inferred.relation,
+        label: edge.label?.trim() || inferred.label,
+      };
+    }) as StrategyEdge[];
   return {
     id: input.id ?? `strategy-${Date.now()}`,
     title: input.title ?? "Strategi baru",
