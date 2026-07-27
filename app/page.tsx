@@ -1760,7 +1760,7 @@ export default function Home() {
               </button>
             </div>
             <div className="agent-line">
-              <span>Gemini 2.5 · Thinking</span>
+              <span>DeepSeek V4 Pro Max · Thinking</span>
               <i />
               <span>GPT-5.4 Mini · Worker</span>
               <i />
@@ -1789,7 +1789,7 @@ export default function Home() {
               />
             </label>
             <div className="model-grid">
-              <div><span>Thinking</span><strong>Gemini 2.5 Flash</strong><small>$0.30 / $2.50</small></div>
+              <div><span>Thinking</span><strong>DeepSeek V4 Pro Max</strong><small>$0.435 / $0.87</small></div>
               <div><span>Worker</span><strong>GPT-5.4 Mini</strong><small>$0.75 / $4.50</small></div>
               <div><span>Architect</span><strong>MiniMax M3</strong><small>$0.30 / $1.20</small></div>
               <div><span>Auditor</span><strong>Qwen 3.7 Max</strong><small>$1.48 / $4.43</small></div>

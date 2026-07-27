@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 const MODEL_CHAINS = {
-  thinker: ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"],
+  thinker: ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"],
   worker: ["openai/gpt-5.4-mini", "minimax/minimax-m3"],
   architect: ["minimax/minimax-m3", "openai/gpt-5.4-mini"],
   auditor: ["qwen/qwen3.7-max", "qwen/qwen3.7-plus"],
@@ -11,6 +11,21 @@ const MODEL_CHAINS = {
 
 function getKey(request: Request) {
   return request.headers.get("x-openrouter-key") || process.env.OPENROUTER_API_KEY;
+}
+
+function requestPlugins(searchMode: "web" | "plain") {
+  return [
+    ...(searchMode === "web"
+      ? [{ id: "web", engine: "exa", max_results: 5 }]
+      : []),
+    { id: "response-healing" },
+  ];
+}
+
+function reasoningParameters(model: string) {
+  return model === "deepseek/deepseek-v4-pro"
+    ? { reasoning: { effort: "xhigh", exclude: true } }
+    : {};
 }
 
 async function callModel({
@@ -32,86 +47,79 @@ async function callModel({
 }) {
   const failures: string[] = [];
 
-  for (const model of models) {
-    const searchParameters = {
-      tools: [
-        {
-          type: "openrouter:web_search",
-          parameters: {
-            engine: "auto",
-            max_results: 5,
-            max_total_results: 8,
-            max_uses: 2,
-            search_context_size: "low",
-          },
-        },
-      ],
-    };
+  const searchModes: ("web" | "plain")[] = search
+    ? ["web", "plain"]
+    : ["plain"];
 
-    const response = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://simpul-strategy-studio.arsyhabib1763.chatgpt.site",
-        "X-Title": "SIMPUL Strategy Studio",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        max_tokens: maxTokens,
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "strategy_payload",
-            strict: true,
-            schema,
-          },
+  for (const searchMode of searchModes) {
+    for (const model of models) {
+      const response = await fetch(OPENROUTER_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://arsyhabib1763.github.io/MAP-STRATEGY-GPT/",
+          "X-Title": "SIMPUL Strategy Studio",
         },
-        plugins: [{ id: "response-healing" }],
-        provider: { require_parameters: true },
-        ...(search ? searchParameters : {}),
-      }),
-    });
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          max_tokens: maxTokens,
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "strategy_payload",
+              strict: true,
+              schema,
+            },
+          },
+          plugins: requestPlugins(searchMode),
+          provider: { require_parameters: true },
+          ...reasoningParameters(model),
+        }),
+      });
 
-    if (response.ok) {
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content;
-      if (!content) {
-        failures.push(`${model}: respons kosong`);
-        continue;
+      if (response.ok) {
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (!content) {
+          failures.push(`${model} (${searchMode}): respons kosong`);
+          continue;
+        }
+        let parsed;
+        try {
+          parsed = typeof content === "string" ? JSON.parse(content) : content;
+        } catch {
+          failures.push(`${model} (${searchMode}): JSON tidak valid`);
+          continue;
+        }
+        return {
+          data: parsed,
+          usage: data.usage,
+          model: data.model || model,
+          annotations: data.choices?.[0]?.message?.annotations ?? [],
+        };
       }
-      let parsed;
+
+      const detail = await response.text();
+      let message = detail.slice(0, 180);
       try {
-        parsed = typeof content === "string" ? JSON.parse(content) : content;
+        const parsed = JSON.parse(detail);
+        message = String(parsed?.error?.message || parsed?.message || message);
       } catch {
-        failures.push(`${model}: JSON tidak valid`);
-        continue;
+        // Keep the plain response text.
       }
-      return {
-        data: parsed,
-        usage: data.usage,
-        model: data.model || model,
-        annotations: data.choices?.[0]?.message?.annotations ?? [],
-      };
+      if (response.status === 401) throw new Error("API key OpenRouter ditolak.");
+      if (response.status === 402) {
+        throw new Error("Saldo OpenRouter tidak mencukupi.");
+      }
+      failures.push(
+        `${model} (${searchMode}): ${message || `HTTP ${response.status}`}`,
+      );
     }
-
-    const detail = await response.text();
-    let message = detail.slice(0, 180);
-    try {
-      const parsed = JSON.parse(detail);
-      message = String(parsed?.error?.message || parsed?.message || message);
-    } catch {
-      // Keep the plain response text.
-    }
-    if (response.status === 401) throw new Error("API key OpenRouter ditolak.");
-    if (response.status === 402) {
-      throw new Error("Saldo OpenRouter tidak mencukupi.");
-    }
-    failures.push(`${model}: ${message || `HTTP ${response.status}`}`);
   }
 
   throw new Error(
@@ -284,7 +292,7 @@ export async function POST(request: Request) {
       key,
       models: MODEL_CHAINS.thinker,
       search: true,
-      maxTokens: 7000,
+      maxTokens: 40000,
       schema: thinkerSchema,
       system:
         "Anda adalah Thinking & Research Agent. Teliti tujuan pengguna memakai sumber primer/tepercaya. Pisahkan fakta, asumsi, batasan, risiko, dan indikator keberhasilan. Jangan tampilkan chain-of-thought. Keluarkan hanya JSON sesuai schema, dalam Bahasa Indonesia yang jelas untuk pengguna awam.",

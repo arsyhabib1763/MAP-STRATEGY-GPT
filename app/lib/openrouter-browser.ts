@@ -3,7 +3,7 @@ import type { PlanKind } from "./strategy";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 const MODEL_CHAINS = {
-  thinker: ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"],
+  thinker: ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"],
   worker: ["openai/gpt-5.4-mini", "minimax/minimax-m3"],
   architect: ["minimax/minimax-m3", "openai/gpt-5.4-mini"],
   auditor: ["qwen/qwen3.7-max", "qwen/qwen3.7-plus"],
@@ -11,21 +11,19 @@ const MODEL_CHAINS = {
 
 type JsonSchema = Record<string, unknown>;
 
-function searchParameters() {
-  return {
-    tools: [
-      {
-        type: "openrouter:web_search",
-        parameters: {
-          engine: "auto",
-          max_results: 5,
-          max_total_results: 8,
-          max_uses: 2,
-          search_context_size: "low",
-        },
-      },
-    ],
-  };
+function requestPlugins(searchMode: "web" | "plain") {
+  return [
+    ...(searchMode === "web"
+      ? [{ id: "web", engine: "exa", max_results: 5 }]
+      : []),
+    { id: "response-healing" },
+  ];
+}
+
+function reasoningParameters(model: string) {
+  return model === "deepseek/deepseek-v4-pro"
+    ? { reasoning: { effort: "xhigh", exclude: true } }
+    : {};
 }
 
 function readableFailure(status: number, detail: string) {
@@ -60,57 +58,63 @@ async function callModel({
 }) {
   const failures: string[] = [];
 
-  for (const model of models) {
-    const response = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": window.location.href,
-        "X-Title": "SIMPUL Strategy Studio",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        max_tokens: maxTokens,
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "strategy_payload",
-            strict: true,
-            schema,
-          },
+  const searchModes: ("web" | "plain")[] = search
+    ? ["web", "plain"]
+    : ["plain"];
+
+  for (const searchMode of searchModes) {
+    for (const model of models) {
+      const response = await fetch(OPENROUTER_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": window.location.href,
+          "X-Title": "SIMPUL Strategy Studio",
         },
-        plugins: [{ id: "response-healing" }],
-        provider: { require_parameters: true },
-        ...(search ? searchParameters() : {}),
-      }),
-    });
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          max_tokens: maxTokens,
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "strategy_payload",
+              strict: true,
+              schema,
+            },
+          },
+          plugins: requestPlugins(searchMode),
+          provider: { require_parameters: true },
+          ...reasoningParameters(model),
+        }),
+      });
 
-    if (response.ok) {
-      const result = await response.json();
-      const content = result.choices?.[0]?.message?.content;
-      if (!content) {
-        failures.push(`${model}: respons kosong`);
-        continue;
+      if (response.ok) {
+        const result = await response.json();
+        const content = result.choices?.[0]?.message?.content;
+        if (!content) {
+          failures.push(`${model} (${searchMode}): respons kosong`);
+          continue;
+        }
+        try {
+          return typeof content === "string" ? JSON.parse(content) : content;
+        } catch {
+          failures.push(`${model} (${searchMode}): JSON tidak valid`);
+          continue;
+        }
       }
-      try {
-        return typeof content === "string" ? JSON.parse(content) : content;
-      } catch {
-        failures.push(`${model}: JSON tidak valid`);
-        continue;
-      }
-    }
 
-    const detail = await response.text();
-    const failure = readableFailure(response.status, detail);
-    if (response.status === 401 || response.status === 402) {
-      throw new Error(failure);
+      const detail = await response.text();
+      const failure = readableFailure(response.status, detail);
+      if (response.status === 401 || response.status === 402) {
+        throw new Error(failure);
+      }
+      failures.push(`${model} (${searchMode}): ${failure}`);
     }
-    failures.push(`${model}: ${failure}`);
   }
 
   throw new Error(
@@ -278,7 +282,7 @@ export async function generateStrategyInBrowser({
     key,
     models: MODEL_CHAINS.thinker,
     search: true,
-    maxTokens: 7000,
+    maxTokens: 40000,
     schema: thinkerSchema,
     system:
       "Anda adalah Thinking & Research Agent. Teliti tujuan pengguna memakai sumber primer/tepercaya. Pisahkan fakta, asumsi, batasan, risiko, dan indikator keberhasilan. Jangan tampilkan chain-of-thought. Keluarkan hanya JSON sesuai schema, dalam Bahasa Indonesia yang jelas untuk pengguna awam.",
