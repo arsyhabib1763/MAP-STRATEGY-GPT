@@ -3,12 +3,9 @@ import { NextResponse } from "next/server";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 const MODEL_CHAINS = {
-  thinker: [
-    "google/gemini-3.5-flash",
-    "openai/gpt-4o-mini-search-preview",
-  ],
-  worker: ["openai/gpt-5.2-codex", "google/gemini-3.5-flash-lite"],
-  architect: ["anthropic/claude-sonnet-5", "google/gemini-3.6-flash"],
+  thinker: ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"],
+  worker: ["openai/gpt-5.4-mini", "minimax/minimax-m3"],
+  architect: ["minimax/minimax-m3", "openai/gpt-5.4-mini"],
   auditor: ["qwen/qwen3.7-max", "qwen/qwen3.7-plus"],
 } as const;
 
@@ -36,23 +33,20 @@ async function callModel({
   const failures: string[] = [];
 
   for (const model of models) {
-    const searchParameters =
-      model === "openai/gpt-4o-mini-search-preview"
-        ? { web_search_options: { search_context_size: "medium" } }
-        : {
-            tools: [
-              {
-                type: "openrouter:web_search",
-                parameters: {
-                  engine: "auto",
-                  max_results: 5,
-                  max_total_results: 8,
-                  max_uses: 2,
-                  search_context_size: "low",
-                },
-              },
-            ],
-          };
+    const searchParameters = {
+      tools: [
+        {
+          type: "openrouter:web_search",
+          parameters: {
+            engine: "auto",
+            max_results: 5,
+            max_total_results: 8,
+            max_uses: 2,
+            search_context_size: "low",
+          },
+        },
+      ],
+    };
 
     const response = await fetch(OPENROUTER_URL, {
       method: "POST",
@@ -313,7 +307,7 @@ export async function POST(request: Request) {
       maxTokens: 12000,
       schema: graphSchema,
       system:
-        "Anda adalah Nodes & Concept Map Architect. Ubah seluruh strategi terperinci, riset, dan rubrik menjadi directed strategy graph yang dapat dieksekusi. Tidak ada batas jumlah simpul: buat sebanyak yang diperlukan untuk mempertahankan setiap fase, subgoal, keputusan, risiko, mitigasi, validasi, dan hasil penting dari teks pengguna. Untuk input kompleks, lakukan dekomposisi mendalam dan jangan memadatkan detail penting hanya demi jumlah simpul sedikit. Judul maksimal 6 kata, detail konkret, koordinat boleh meluas tanpa batas kanvas tetap, durasi dalam jam, effort dan impact 1–10, confidence 0–100. Semua id unik. Setiap garis wajib memiliki relation dan label yang menjelaskan fungsi hubungan secara spesifik. Pastikan setiap simpul berkontribusi pada hasil. Keluarkan hanya JSON.",
+        "Anda adalah Nodes & Concept Map Architect. Ubah seluruh strategi terperinci, riset, dan rubrik menjadi directed strategy graph yang dapat dieksekusi. Tidak ada batas jumlah simpul: buat sebanyak yang diperlukan untuk mempertahankan setiap fase, subgoal, keputusan, risiko, mitigasi, validasi, dan hasil penting dari teks pengguna. Untuk input kompleks, lakukan dekomposisi mendalam dan jangan memadatkan detail penting hanya demi jumlah simpul sedikit. Judul maksimal 6 kata, detail konkret, koordinat boleh meluas tanpa batas kanvas tetap, durasi dalam jam, effort dan impact 1-10, confidence 0-100. Semua id unik. Setiap garis wajib memiliki relation dan label yang menjelaskan fungsi hubungan secara spesifik. Setiap simpul harus memiliki sedikitnya satu hubungan, setiap cabang harus bermuara pada sasaran, jumlah hubungan minimal nodes.length - 1, dan tidak boleh ada simpul yatim atau komponen terpisah. Pastikan setiap simpul berkontribusi pada hasil. Keluarkan hanya JSON.",
       user: JSON.stringify({
         kind,
         prompt,

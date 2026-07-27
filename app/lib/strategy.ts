@@ -318,6 +318,213 @@ export function inferEdgeRelation(
   return { relation: "dependency", label: "Menjadi prasyarat untuk langkah berikutnya" };
 }
 
+export function ensureConnectedStrategyGraph(
+  nodes: StrategyNode[],
+  edges: StrategyEdge[],
+): StrategyEdge[] {
+  if (nodes.length < 2) return [];
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const order = new Map(nodes.map((node, index) => [node.id, index]));
+  const seenPairs = new Set<string>();
+  const result = edges.filter((edge) => {
+    if (
+      !nodeById.has(edge.source) ||
+      !nodeById.has(edge.target) ||
+      edge.source === edge.target
+    ) {
+      return false;
+    }
+    const pair = `${edge.source}->${edge.target}`;
+    if (seenPairs.has(pair)) return false;
+    seenPairs.add(pair);
+    return true;
+  });
+
+  const outgoingCount = new Map(nodes.map((node) => [node.id, 0]));
+  result.forEach((edge) =>
+    outgoingCount.set(edge.source, (outgoingCount.get(edge.source) ?? 0) + 1),
+  );
+  const terminal =
+    [...nodes]
+      .filter(
+        (node) => node.kind === "goal" && (outgoingCount.get(node.id) ?? 0) === 0,
+      )
+      .sort(
+        (a, b) =>
+          b.impact - a.impact ||
+          (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0),
+      )[0] ??
+    [...nodes]
+      .filter((node) => (outgoingCount.get(node.id) ?? 0) === 0)
+      .sort(
+        (a, b) =>
+          b.impact - a.impact ||
+          (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0),
+      )[0] ??
+    nodes[nodes.length - 1];
+
+  function addAutomaticEdge(sourceId: string, targetId: string) {
+    if (sourceId === targetId) return;
+    const pair = `${sourceId}->${targetId}`;
+    if (seenPairs.has(pair)) return;
+    const source = nodeById.get(sourceId);
+    const target = nodeById.get(targetId);
+    if (!source || !target) return;
+    const inferred = inferEdgeRelation(source, target);
+    seenPairs.add(pair);
+    result.push({
+      id: `auto-edge-${result.length + 1}`,
+      source: sourceId,
+      target: targetId,
+      relation: inferred.relation,
+      label:
+        source.kind === "risk"
+          ? `Mitigasi risiko untuk ${target.title}`
+          : `${source.title} mendukung ${target.title}`,
+    });
+  }
+
+  const undirected = new Map(nodes.map((node) => [node.id, [] as string[]]));
+  result.forEach((edge) => {
+    undirected.get(edge.source)?.push(edge.target);
+    undirected.get(edge.target)?.push(edge.source);
+  });
+  const visited = new Set<string>();
+  const components: string[][] = [];
+  nodes.forEach((node) => {
+    if (visited.has(node.id)) return;
+    const component: string[] = [];
+    const queue = [node.id];
+    visited.add(node.id);
+    while (queue.length) {
+      const current = queue.shift()!;
+      component.push(current);
+      for (const next of undirected.get(current) ?? []) {
+        if (!visited.has(next)) {
+          visited.add(next);
+          queue.push(next);
+        }
+      }
+    }
+    components.push(component);
+  });
+
+  components
+    .filter((component) => !component.includes(terminal.id))
+    .forEach((component) => {
+      const componentSet = new Set(component);
+      const componentOutgoing = new Set(
+        result
+          .filter(
+            (edge) =>
+              componentSet.has(edge.source) && componentSet.has(edge.target),
+          )
+          .map((edge) => edge.source),
+      );
+      const bridge =
+        [...component]
+          .filter((id) => !componentOutgoing.has(id))
+          .map((id) => nodeById.get(id)!)
+          .sort(
+            (a, b) =>
+              b.impact - a.impact ||
+              (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0),
+          )[0] ?? nodeById.get(component[component.length - 1])!;
+      addAutomaticEdge(bridge.id, terminal.id);
+    });
+
+  const outgoing = new Set(result.map((edge) => edge.source));
+  nodes
+    .filter((node) => node.id !== terminal.id && !outgoing.has(node.id))
+    .forEach((node) => addAutomaticEdge(node.id, terminal.id));
+  return result;
+}
+
+export type OrthogonalEdgeGeometry = {
+  path: string;
+  points: { x: number; y: number }[];
+  labelX: number;
+  labelY: number;
+};
+
+function roundedPolylinePath(points: { x: number; y: number }[]) {
+  if (points.length < 2) return "";
+  let path = `M ${points[0].x} ${points[0].y}`;
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const next = points[index + 1];
+    const previousLength = Math.hypot(
+      current.x - previous.x,
+      current.y - previous.y,
+    );
+    const nextLength = Math.hypot(next.x - current.x, next.y - current.y);
+    const radius = Math.min(16, previousLength / 2, nextLength / 2);
+    const before = {
+      x:
+        current.x -
+        ((current.x - previous.x) / Math.max(previousLength, 1)) * radius,
+      y:
+        current.y -
+        ((current.y - previous.y) / Math.max(previousLength, 1)) * radius,
+    };
+    const after = {
+      x:
+        current.x +
+        ((next.x - current.x) / Math.max(nextLength, 1)) * radius,
+      y:
+        current.y +
+        ((next.y - current.y) / Math.max(nextLength, 1)) * radius,
+    };
+    path += ` L ${before.x} ${before.y} Q ${current.x} ${current.y} ${after.x} ${after.y}`;
+  }
+  const last = points[points.length - 1];
+  return `${path} L ${last.x} ${last.y}`;
+}
+
+export function getOrthogonalEdgeGeometry(
+  source: StrategyNode,
+  target: StrategyNode,
+): OrthogonalEdgeGeometry {
+  const sourceCenterX = source.x + 114;
+  const sourceCenterY = source.y + 72;
+  const targetCenterX = target.x + 114;
+  const targetCenterY = target.y + 72;
+  const horizontalDistance = Math.abs(targetCenterX - sourceCenterX);
+  const verticalDistance = Math.abs(targetCenterY - sourceCenterY);
+  let points: { x: number; y: number }[];
+
+  if (horizontalDistance >= verticalDistance * 0.72) {
+    const movingRight = targetCenterX >= sourceCenterX;
+    const x1 = movingRight ? source.x + 228 : source.x;
+    const x2 = movingRight ? target.x : target.x + 228;
+    const middleX = (x1 + x2) / 2;
+    points = [
+      { x: x1, y: sourceCenterY },
+      { x: middleX, y: sourceCenterY },
+      { x: middleX, y: targetCenterY },
+      { x: x2, y: targetCenterY },
+    ];
+  } else {
+    const movingDown = targetCenterY >= sourceCenterY;
+    const y1 = movingDown ? source.y + 144 : source.y;
+    const y2 = movingDown ? target.y : target.y + 144;
+    const middleY = (y1 + y2) / 2;
+    points = [
+      { x: sourceCenterX, y: y1 },
+      { x: sourceCenterX, y: middleY },
+      { x: targetCenterX, y: middleY },
+      { x: targetCenterX, y: y2 },
+    ];
+  }
+  return {
+    path: roundedPolylinePath(points),
+    points,
+    labelX: (points[1].x + points[2].x) / 2,
+    labelY: (points[1].y + points[2].y) / 2,
+  };
+}
+
 export function arrangeStrategyNodes(
   nodes: StrategyNode[],
   edges: StrategyEdge[],
@@ -325,10 +532,14 @@ export function arrangeStrategyNodes(
   if (!nodes.length) return [];
   const incoming = new Map(nodes.map((node) => [node.id, 0]));
   const outgoing = new Map(nodes.map((node) => [node.id, [] as string[]]));
+  const incomingNeighbors = new Map(
+    nodes.map((node) => [node.id, [] as string[]]),
+  );
   edges.forEach((edge) => {
     if (!incoming.has(edge.source) || !incoming.has(edge.target)) return;
     incoming.set(edge.target, (incoming.get(edge.target) ?? 0) + 1);
     outgoing.get(edge.source)?.push(edge.target);
+    incomingNeighbors.get(edge.target)?.push(edge.source);
   });
 
   const levels = new Map<string, number>();
@@ -358,26 +569,85 @@ export function arrangeStrategyNodes(
     grouped.set(level, [...(grouped.get(level) ?? []), node]);
   });
 
-  const levelStart = new Map<number, number>();
-  let nextX = 70;
-  [...grouped.keys()]
-    .sort((a, b) => a - b)
-    .forEach((level) => {
-      levelStart.set(level, nextX);
-      const subColumns = Math.max(1, Math.ceil((grouped.get(level)?.length ?? 1) / 6));
-      nextX += subColumns * 290;
+  const sortedLevels = [...grouped.keys()].sort((a, b) => a - b);
+  for (let sweep = 0; sweep < 6; sweep += 1) {
+    const positions = new Map<string, number>();
+    sortedLevels.forEach((level) =>
+      (grouped.get(level) ?? []).forEach((node, index) =>
+        positions.set(node.id, index),
+      ),
+    );
+    sortedLevels.slice(1).forEach((level) => {
+      const layer = grouped.get(level) ?? [];
+      layer.sort((a, b) => {
+        const barycenter = (id: string) => {
+          const neighbors = incomingNeighbors.get(id) ?? [];
+          if (!neighbors.length) return positions.get(id) ?? 0;
+          return (
+            neighbors.reduce(
+              (sum, neighbor) => sum + (positions.get(neighbor) ?? 0),
+              0,
+            ) / neighbors.length
+          );
+        };
+        return barycenter(a.id) - barycenter(b.id);
+      });
     });
+    sortedLevels
+      .slice(0, -1)
+      .reverse()
+      .forEach((level) => {
+        const layer = grouped.get(level) ?? [];
+        layer.sort((a, b) => {
+          const barycenter = (id: string) => {
+            const neighbors = outgoing.get(id) ?? [];
+            if (!neighbors.length) return positions.get(id) ?? 0;
+            return (
+              neighbors.reduce(
+                (sum, neighbor) => sum + (positions.get(neighbor) ?? 0),
+                0,
+              ) / neighbors.length
+            );
+          };
+          return barycenter(a.id) - barycenter(b.id);
+        });
+      });
+  }
+
+  const maxRows = clamp(
+    Math.ceil(Math.sqrt(nodes.length) * 1.65),
+    6,
+    12,
+  );
+  const columnStep = 370;
+  const levelGap = 110;
+  const rowStep = 200;
+  const levelStart = new Map<number, number>();
+  let nextX = 80;
+  sortedLevels.forEach((level) => {
+    levelStart.set(level, nextX);
+    const subColumns = Math.max(
+      1,
+      Math.ceil((grouped.get(level)?.length ?? 1) / maxRows),
+    );
+    nextX += subColumns * columnStep + levelGap;
+  });
 
   return nodes.map((node) => {
     const level = levels.get(node.id) ?? 0;
     const siblings = grouped.get(level) ?? [node];
     const index = siblings.findIndex((item) => item.id === node.id);
-    const subColumn = Math.floor(index / 6);
-    const row = index % 6;
+    const subColumn = Math.floor(index / maxRows);
+    const row = index % maxRows;
+    const nodesInColumn = Math.min(
+      maxRows,
+      siblings.length - subColumn * maxRows,
+    );
+    const verticalOffset = ((maxRows - nodesInColumn) * rowStep) / 2;
     return {
       ...node,
-      x: (levelStart.get(level) ?? 70) + subColumn * 290,
-      y: 80 + row * 180,
+      x: (levelStart.get(level) ?? 80) + subColumn * columnStep,
+      y: 80 + verticalOffset + row * rowStep,
     };
   });
 }
@@ -615,10 +885,9 @@ export function normalizeStrategy(
     } as StrategyNode;
     return { ...normalized, status: normalized.status || deriveNodeStatus(normalized) };
   });
-  const nodes = options.arrange ? arrangeStrategyNodes(rawNodes, input.edges ?? []) : rawNodes;
-  const ids = new Set(nodes.map((node) => node.id));
-  const nodeById = new Map(nodes.map((node) => [node.id, node]));
-  const edges = (input.edges ?? [])
+  const ids = new Set(rawNodes.map((node) => node.id));
+  const nodeById = new Map(rawNodes.map((node) => [node.id, node]));
+  const normalizedEdges = (input.edges ?? [])
     .filter(
       (edge) => ids.has(edge.source) && ids.has(edge.target) && edge.source !== edge.target,
     )
@@ -634,6 +903,10 @@ export function normalizeStrategy(
         label: edge.label?.trim() || inferred.label,
       };
     }) as StrategyEdge[];
+  const edges = ensureConnectedStrategyGraph(rawNodes, normalizedEdges);
+  const nodes = options.arrange
+    ? arrangeStrategyNodes(rawNodes, edges)
+    : rawNodes;
   return {
     id: input.id ?? `strategy-${Date.now()}`,
     title: input.title ?? "Strategi baru",

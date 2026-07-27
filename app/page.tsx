@@ -4,10 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   arrangeStrategyNodes,
   auditStrategy,
-  DEFAULT_RUBRIC,
   DEMO_STRATEGY,
   deriveNodeStatus,
   EDGE_RELATION_LABEL,
+  ensureConnectedStrategyGraph,
+  getOrthogonalEdgeGeometry,
   getStrategyCanvasSize,
   inferEdgeRelation,
   nodePriorityScore,
@@ -334,6 +335,7 @@ export default function Home() {
   const [auditOpen, setAuditOpen] = useState(true);
   const [railOpen, setRailOpen] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -350,7 +352,9 @@ export default function Home() {
     insights: string[];
   } | null>(null);
   const [aiAuditBusy, setAiAuditBusy] = useState(false);
-  const [pdfBusy, setPdfBusy] = useState(false);
+  const [exportBusy, setExportBusy] = useState<
+    "pdf" | "svg" | "docx" | "json" | null
+  >(null);
   const [history, setHistory] = useState<HistoryFrame[]>([]);
   const [future, setFuture] = useState<HistoryFrame[]>([]);
   const lastCommitted = useRef<HistoryFrame>({
@@ -408,6 +412,8 @@ export default function Home() {
           parsed.prompt || "",
           parsed.kind || "goal",
         );
+        // State hydration intentionally follows the browser-only storage read.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setDocument(restored);
         lastCommitted.current = {
           nodes: deepCopy(restored.nodes),
@@ -438,6 +444,8 @@ export default function Home() {
     try {
       localStorage.setItem("simpul-strategy", JSON.stringify(document));
     } catch {
+      // Surface quota failures immediately because the persistence attempt failed.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setNotice("Peta terlalu besar untuk penyimpanan lokal browser; ekspor PDF sebagai cadangan.");
     }
   }, [document]);
@@ -489,20 +497,6 @@ export default function Home() {
     loading,
     localAudit,
   ]);
-
-  function mutateGraph(
-    updater: (nodes: StrategyNode[], edges: StrategyEdge[]) => {
-      nodes: StrategyNode[];
-      edges: StrategyEdge[];
-    },
-    shouldCommit = true,
-  ) {
-    setDocument((current) => {
-      const next = updater(current.nodes, current.edges);
-      return { ...current, ...next };
-    });
-    if (shouldCommit) setTimeout(commit, 0);
-  }
 
   function moveNode(id: string, x: number, y: number) {
     setDocument((current) => ({
@@ -992,15 +986,23 @@ export default function Home() {
       nodes: deepCopy(document.nodes),
       edges: deepCopy(document.edges),
     };
-    const arranged = arrangeStrategyNodes(document.nodes, document.edges);
+    const connectedEdges = ensureConnectedStrategyGraph(
+      document.nodes,
+      document.edges,
+    );
+    const arranged = arrangeStrategyNodes(document.nodes, connectedEdges);
     setHistory((items) => [...items.slice(-29), previous]);
-    setDocument((current) => ({ ...current, nodes: arranged }));
+    setDocument((current) => ({
+      ...current,
+      nodes: arranged,
+      edges: connectedEdges,
+    }));
     lastCommitted.current = {
       nodes: deepCopy(arranged),
-      edges: deepCopy(document.edges),
+      edges: deepCopy(connectedEdges),
     };
     setFuture([]);
-    setNotice("Peta dirapikan berdasarkan dependensi.");
+    setNotice("Peta dirapikan dan koneksi terputus diperbaiki.");
   }
 
   async function importStrategyText(event: React.ChangeEvent<HTMLInputElement>) {
@@ -1103,18 +1105,36 @@ export default function Home() {
       : localAudit.insights,
   };
 
-  async function exportPdf() {
-    setPdfBusy(true);
+  async function exportStrategy(format: "pdf" | "svg" | "docx" | "json") {
+    setExportBusy(format);
     try {
-      const { downloadStrategyPdf } = await import("./lib/export-pdf.js");
-      await downloadStrategyPdf(document, displayAudit);
-      setNotice("PDF strategy map dan audit berhasil dibuat.");
+      if (format === "pdf") {
+        const { downloadStrategyPdf } = await import("./lib/export-pdf.js");
+        await downloadStrategyPdf(document, displayAudit);
+      } else {
+        const exporters = await import("./lib/export-formats.js");
+        if (format === "svg") {
+          exporters.downloadStrategySvg(document, displayAudit);
+        } else if (format === "docx") {
+          await exporters.downloadStrategyDocx(document, displayAudit);
+        } else {
+          exporters.downloadStrategyJson(document, displayAudit);
+        }
+      }
+      const names = {
+        pdf: "PDF report dan poster satu halaman",
+        svg: "SVG poster vektor",
+        docx: "Dokumen Word",
+        json: "Backup JSON",
+      };
+      setNotice(`${names[format]} berhasil dibuat.`);
+      setExportOpen(false);
     } catch (error) {
       setNotice(
-        error instanceof Error ? error.message : "PDF tidak dapat dibuat.",
+        error instanceof Error ? error.message : "Dokumen tidak dapat dibuat.",
       );
     } finally {
-      setPdfBusy(false);
+      setExportBusy(null);
     }
   }
 
@@ -1203,8 +1223,8 @@ export default function Home() {
           <button className="tool-button" onClick={() => setSourcesOpen(true)}>
             <span>◫</span> {document.sources.length} sumber
           </button>
-          <button className="tool-button" onClick={exportPdf} disabled={pdfBusy}>
-            <span>PDF</span> {pdfBusy ? "Menyusun..." : "Ekspor"}
+          <button className="tool-button" onClick={() => setExportOpen(true)}>
+            <span>⇩</span> Ekspor
           </button>
           {connectSource && <span className="connect-hint">Pilih tujuan · Esc batal</span>}
         </div>
@@ -1240,14 +1260,9 @@ export default function Home() {
                 const source = document.nodes.find((node) => node.id === edge.source);
                 const target = document.nodes.find((node) => node.id === edge.target);
                 if (!source || !target) return null;
-                const x1 = source.x + 228;
-                const y1 = source.y + 72;
-                const x2 = target.x;
-                const y2 = target.y + 72;
-                const bend = Math.max(70, Math.abs(x2 - x1) * 0.48);
-                const path = `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
-                const midX = (x1 + x2) / 2;
-                const midY = (y1 + y2) / 2;
+                const geometry = getOrthogonalEdgeGeometry(source, target);
+                const targetPoint =
+                  geometry.points[geometry.points.length - 1];
                 const edgeText = edge.label || EDGE_RELATION_LABEL[edge.relation];
                 const shortLabel =
                   edgeText.length > 34 ? `${edgeText.slice(0, 32)}...` : edgeText;
@@ -1264,7 +1279,7 @@ export default function Home() {
                   >
                     <path
                       className="edge-hit"
-                      d={path}
+                      d={geometry.path}
                       role="button"
                       tabIndex={0}
                       aria-label={`Edit hubungan: ${edgeText}`}
@@ -1281,20 +1296,25 @@ export default function Home() {
                         }
                       }}
                     />
-                    <path className="edge-line" d={path} />
-                    <circle className="edge-dot" cx={x2} cy={y2} r="4" />
+                    <path className="edge-line" d={geometry.path} />
+                    <circle
+                      className="edge-dot"
+                      cx={targetPoint.x}
+                      cy={targetPoint.y}
+                      r="4"
+                    />
                     <rect
                       className="edge-label-bg"
-                      x={midX - labelWidth / 2}
-                      y={midY - 13}
+                      x={geometry.labelX - labelWidth / 2}
+                      y={geometry.labelY - 13}
                       width={labelWidth}
                       height="26"
                       rx="7"
                     />
                     <text
                       className="edge-label-text"
-                      x={midX}
-                      y={midY + 3}
+                      x={geometry.labelX}
+                      y={geometry.labelY + 3}
                       textAnchor="middle"
                     >
                       {shortLabel}
@@ -1622,6 +1642,77 @@ export default function Home() {
         </div>
       )}
 
+      {exportOpen && (
+        <div className="modal-backdrop" onMouseDown={() => setExportOpen(false)}>
+          <section
+            className="export-sheet"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="modal-heading">
+              <div>
+                <span className="eyebrow">EKSPOR STRATEGI</span>
+                <h2>Pilih format hasil</h2>
+                <p>
+                  Peta selalu dimuat utuh. PDF memakai satu halaman poster A1
+                  atau A0 yang siap dicetak.
+                </p>
+              </div>
+              <button onClick={() => setExportOpen(false)}>×</button>
+            </div>
+            <div className="export-grid">
+              <button
+                onClick={() => exportStrategy("pdf")}
+                disabled={exportBusy !== null}
+              >
+                <span>PDF</span>
+                <strong>Report + poster</strong>
+                <small>
+                  Audit, input, sumber, dan seluruh map pada tepat satu halaman
+                  poster.
+                </small>
+                <b>{exportBusy === "pdf" ? "Menyusun…" : "Unduh →"}</b>
+              </button>
+              <button
+                onClick={() => exportStrategy("svg")}
+                disabled={exportBusy !== null}
+              >
+                <span>SVG</span>
+                <strong>Poster vektor</strong>
+                <small>
+                  Tajam pada ukuran cetak besar dan dapat diedit di aplikasi
+                  desain.
+                </small>
+                <b>{exportBusy === "svg" ? "Menyusun…" : "Unduh →"}</b>
+              </button>
+              <button
+                onClick={() => exportStrategy("docx")}
+                disabled={exportBusy !== null}
+              >
+                <span>DOCX</span>
+                <strong>Dokumen Word</strong>
+                <small>
+                  Audit, input, daftar simpul, hubungan, dan sumber yang mudah
+                  disunting.
+                </small>
+                <b>{exportBusy === "docx" ? "Menyusun…" : "Unduh →"}</b>
+              </button>
+              <button
+                onClick={() => exportStrategy("json")}
+                disabled={exportBusy !== null}
+              >
+                <span>JSON</span>
+                <strong>Backup lengkap</strong>
+                <small>
+                  Struktur node, garis, posisi, rubrik, dan audit untuk
+                  pemulihan atau integrasi.
+                </small>
+                <b>{exportBusy === "json" ? "Menyusun…" : "Unduh →"}</b>
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {composerOpen && (
         <div className="modal-backdrop">
           <section className="composer">
@@ -1669,11 +1760,11 @@ export default function Home() {
               </button>
             </div>
             <div className="agent-line">
-              <span>Gemini · Thinking</span>
+              <span>Gemini 2.5 · Thinking</span>
               <i />
-              <span>GPT · Worker</span>
+              <span>GPT-5.4 Mini · Worker</span>
               <i />
-              <span>Claude · Architect</span>
+              <span>MiniMax M3 · Architect</span>
               <i />
               <span>Qwen · Auditor</span>
             </div>
@@ -1698,9 +1789,9 @@ export default function Home() {
               />
             </label>
             <div className="model-grid">
-              <div><span>Thinking</span><strong>Gemini 3.5 Flash</strong><small>$1.50 / $9.00</small></div>
-              <div><span>Worker</span><strong>GPT-5.2 Codex</strong><small>$1.75 / $14.00</small></div>
-              <div><span>Architect</span><strong>Claude Sonnet 5</strong><small>$2.00 / $10.00</small></div>
+              <div><span>Thinking</span><strong>Gemini 2.5 Flash</strong><small>$0.30 / $2.50</small></div>
+              <div><span>Worker</span><strong>GPT-5.4 Mini</strong><small>$0.75 / $4.50</small></div>
+              <div><span>Architect</span><strong>MiniMax M3</strong><small>$0.30 / $1.20</small></div>
               <div><span>Auditor</span><strong>Qwen 3.7 Max</strong><small>$1.48 / $4.43</small></div>
             </div>
             <p className="pricing-note">Harga input / output per 1 juta token, terverifikasi dari katalog OpenRouter saat aplikasi disusun. Setiap role memiliki model failover otomatis jika endpoint utama sedang bermasalah.</p>

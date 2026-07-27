@@ -208,147 +208,189 @@ function addSummaryPage(doc, strategy, audit) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.5);
   doc.text(
-    `Audit dihitung ${new Date(audit.calculatedAt).toLocaleString("id-ID")}. PDF menyertakan input lengkap, semua tile peta, dan sumber.`,
+    `Audit dihitung ${new Date(audit.calculatedAt).toLocaleString("id-ID")}. PDF menyertakan input lengkap, satu halaman poster peta, dan sumber.`,
     MARGIN,
     270,
   );
 }
 
-function intersectsEdgeTile(source, target, tile) {
-  const minX = Math.min(source.x, target.x);
-  const maxX = Math.max(source.x, target.x) + 228;
-  const minY = Math.min(source.y, target.y);
-  const maxY = Math.max(source.y, target.y) + 144;
-  return !(
-    maxX < tile.x ||
-    minX > tile.x + tile.width ||
-    maxY < tile.y ||
-    minY > tile.y + tile.height
-  );
+function orthogonalPoints(source, target) {
+  const sourceCenterX = source.x + 114;
+  const sourceCenterY = source.y + 72;
+  const targetCenterX = target.x + 114;
+  const targetCenterY = target.y + 72;
+  const horizontalDistance = Math.abs(targetCenterX - sourceCenterX);
+  const verticalDistance = Math.abs(targetCenterY - sourceCenterY);
+  if (horizontalDistance >= verticalDistance * 0.72) {
+    const movingRight = targetCenterX >= sourceCenterX;
+    const x1 = movingRight ? source.x + 228 : source.x;
+    const x2 = movingRight ? target.x : target.x + 228;
+    const middleX = (x1 + x2) / 2;
+    return [
+      { x: x1, y: sourceCenterY },
+      { x: middleX, y: sourceCenterY },
+      { x: middleX, y: targetCenterY },
+      { x: x2, y: targetCenterY },
+    ];
+  }
+  const movingDown = targetCenterY >= sourceCenterY;
+  const y1 = movingDown ? source.y + 144 : source.y;
+  const y2 = movingDown ? target.y : target.y + 144;
+  const middleY = (y1 + y2) / 2;
+  return [
+    { x: sourceCenterX, y: y1 },
+    { x: sourceCenterX, y: middleY },
+    { x: targetCenterX, y: middleY },
+    { x: targetCenterX, y: y2 },
+  ];
 }
 
-function addMapPages(doc, strategy) {
+function addMapPosterPage(doc, strategy, audit) {
   const nodeById = new Map(strategy.nodes.map((node) => [node.id, node]));
-  const maxX = Math.max(1200, ...strategy.nodes.map((node) => node.x + 270));
-  const maxY = Math.max(760, ...strategy.nodes.map((node) => node.y + 190));
-  const tileWidth = 1150;
-  const tileHeight = 690;
-  const columns = Math.max(1, Math.ceil(maxX / tileWidth));
-  const rows = Math.max(1, Math.ceil(maxY / tileHeight));
-  let mapPage = 0;
-  const mapPages = columns * rows;
+  const minX = Math.min(...strategy.nodes.map((node) => node.x), 0);
+  const minY = Math.min(...strategy.nodes.map((node) => node.y), 0);
+  const maxX = Math.max(...strategy.nodes.map((node) => node.x + 228), 1200);
+  const maxY = Math.max(...strategy.nodes.map((node) => node.y + 144), 760);
+  const mapWidth = maxX - minX;
+  const mapHeight = maxY - minY;
+  const useA0 = strategy.nodes.length > 48 || mapWidth > 4200 || mapHeight > 2800;
+  const posterWidth = useA0 ? 1189 : 841;
+  const posterHeight = useA0 ? 841 : 594;
+  const posterMargin = useA0 ? 24 : 18;
+  const headerHeight = useA0 ? 62 : 48;
+  doc.addPage([posterWidth, posterHeight], "landscape");
+  setColor(doc, COLORS.paper, "fill");
+  doc.rect(0, 0, posterWidth, posterHeight, "F");
+  setColor(doc, COLORS.ink, "fill");
+  doc.rect(0, 0, posterWidth, headerHeight, "F");
+  setColor(doc, COLORS.signal, "fill");
+  doc.rect(posterMargin, 13, 7, 7, "F");
+  setColor(doc, [255, 255, 255]);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(useA0 ? 24 : 18);
+  doc.text(ascii(strategy.title), posterMargin + 13, useA0 ? 23 : 20);
+  setColor(doc, [184, 186, 194]);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(useA0 ? 11 : 8.5);
+  doc.text(
+    `${strategy.nodes.length} simpul | ${strategy.edges.length} hubungan | skor audit ${Math.round(audit.score)}/100 | poster ${useA0 ? "A0" : "A1"}`,
+    posterMargin + 13,
+    useA0 ? 42 : 35,
+  );
 
-  for (let row = 0; row < rows; row += 1) {
-    for (let column = 0; column < columns; column += 1) {
-      mapPage += 1;
-      const tile = {
-        x: column * tileWidth,
-        y: row * tileHeight,
-        width: tileWidth,
-        height: tileHeight,
-      };
-      doc.addPage([PAGE_WIDTH, PAGE_HEIGHT], "landscape");
-      sectionTitle(
-        doc,
-        `Strategy map - area ${mapPage}/${mapPages}`,
-        `Kolom ${column + 1}/${columns}, baris ${row + 1}/${rows}`,
-        18,
-      );
-      const mapTop = 33;
-      const mapHeight = PAGE_HEIGHT - mapTop - 18;
-      const scale = Math.min(CONTENT_WIDTH / tileWidth, mapHeight / tileHeight);
-      const tx = (x) => MARGIN + (x - tile.x) * scale;
-      const ty = (y) => mapTop + (y - tile.y) * scale;
+  const mapTop = headerHeight + posterMargin;
+  const mapBottom = posterHeight - posterMargin;
+  const availableWidth = posterWidth - posterMargin * 2;
+  const availableHeight = mapBottom - mapTop;
+  const scale = Math.min(availableWidth / mapWidth, availableHeight / mapHeight);
+  const renderedWidth = mapWidth * scale;
+  const renderedHeight = mapHeight * scale;
+  const originX = posterMargin + (availableWidth - renderedWidth) / 2;
+  const originY = mapTop + (availableHeight - renderedHeight) / 2;
+  const tx = (x) => originX + (x - minX) * scale;
+  const ty = (y) => originY + (y - minY) * scale;
 
-      strategy.edges.forEach((edge) => {
-        const source = nodeById.get(edge.source);
-        const target = nodeById.get(edge.target);
-        if (!source || !target || !intersectsEdgeTile(source, target, tile)) return;
-        const relationColor = RELATION_COLORS[edge.relation] || COLORS.muted;
-        setColor(doc, relationColor, "draw");
-        doc.setLineWidth(0.65);
-        const x1 = tx(source.x + 228);
-        const y1 = ty(source.y + 72);
-        const x2 = tx(target.x);
-        const y2 = ty(target.y + 72);
-        doc.line(x1, y1, x2, y2);
-        setColor(doc, relationColor, "fill");
-        doc.circle(x2, y2, 1.5, "F");
+  strategy.edges.forEach((edge) => {
+    const source = nodeById.get(edge.source);
+    const target = nodeById.get(edge.target);
+    if (!source || !target) return;
+    const relationColor = RELATION_COLORS[edge.relation] || COLORS.muted;
+    const points = orthogonalPoints(source, target);
+    const start = { x: tx(points[0].x), y: ty(points[0].y) };
+    const vectors = points.slice(1).map((point, index) => ({
+      x: tx(point.x) - tx(points[index].x),
+      y: ty(point.y) - ty(points[index].y),
+    }));
+    setColor(doc, relationColor, "draw");
+    doc.setLineWidth(Math.max(0.45, 1.5 * scale));
+    doc.setLineJoin("round");
+    doc.setLineCap("round");
+    doc.lines(
+      vectors.map((vector) => [vector.x, vector.y]),
+      start.x,
+      start.y,
+      [1, 1],
+      "S",
+      false,
+    );
+    const end = points.at(-1);
+    setColor(doc, relationColor, "fill");
+    doc.circle(tx(end.x), ty(end.y), Math.max(0.8, 2.5 * scale), "F");
 
-        const midX = (x1 + x2) / 2;
-        const midY = (y1 + y2) / 2;
-        if (
-          midX > MARGIN + 16 &&
-          midX < PAGE_WIDTH - MARGIN - 16 &&
-          midY > mapTop + 6 &&
-          midY < PAGE_HEIGHT - 14
-        ) {
-          const label = ascii(edge.label).slice(0, 54);
-          doc.setFont("helvetica", "bold");
-          doc.setFontSize(5.6);
-          const width = Math.min(58, Math.max(24, doc.getTextWidth(label) + 5));
-          setColor(doc, [255, 255, 255], "fill");
-          setColor(doc, relationColor, "draw");
-          doc.roundedRect(midX - width / 2, midY - 4.2, width, 8, 2, 2, "FD");
-          setColor(doc, relationColor);
-          doc.text(label, midX, midY + 0.5, { align: "center" });
-        }
-      });
+    const label = ascii(edge.label).slice(0, 66);
+    const labelX = tx((points[1].x + points[2].x) / 2);
+    const labelY = ty((points[1].y + points[2].y) / 2);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(Math.max(4.2, Math.min(8, 14 * scale)));
+    const labelWidth = Math.min(95, Math.max(22, doc.getTextWidth(label) + 5));
+    setColor(doc, [255, 255, 255], "fill");
+    setColor(doc, relationColor, "draw");
+    doc.roundedRect(
+      labelX - labelWidth / 2,
+      labelY - 3.8,
+      labelWidth,
+      7.6,
+      1.8,
+      1.8,
+      "FD",
+    );
+    setColor(doc, relationColor);
+    doc.text(label, labelX, labelY + 1.2, { align: "center" });
+  });
 
-      strategy.nodes.forEach((node) => {
-        const centerX = node.x + 114;
-        const centerY = node.y + 72;
-        if (
-          centerX < tile.x ||
-          centerX >= tile.x + tile.width ||
-          centerY < tile.y ||
-          centerY >= tile.y + tile.height
-        ) {
-          return;
-        }
-        const x = tx(node.x);
-        const y = ty(node.y);
-        const width = 228 * scale;
-        const height = 144 * scale;
-        const accent =
-          node.kind === "goal"
-            ? COLORS.signal
-            : node.kind === "risk"
-              ? COLORS.red
-              : node.kind === "decision"
-                ? COLORS.orange
-                : node.kind === "milestone"
-                  ? COLORS.blue
-                  : [125, 134, 157];
-        setColor(doc, node.kind === "goal" ? COLORS.ink : node.kind === "risk" ? [255, 246, 241] : [255, 255, 255], "fill");
-        setColor(doc, COLORS.line, "draw");
-        doc.roundedRect(x, y, width, height, 2.5, 2.5, "FD");
-        setColor(doc, accent, "fill");
-        doc.rect(x, y, width, Math.max(1.5, 4 * scale), "F");
-        setColor(doc, node.kind === "goal" ? COLORS.signal : COLORS.muted);
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(6);
-        doc.text(KIND_LABELS[node.kind] || "SIMPUL", x + 4, y + 8);
-        setColor(doc, node.kind === "goal" ? [255, 255, 255] : COLORS.ink);
-        doc.setFontSize(9);
-        const title = doc.splitTextToSize(ascii(node.title), width - 8).slice(0, 2);
-        doc.text(title, x + 4, y + 17);
-        setColor(doc, node.kind === "goal" ? [185, 187, 195] : COLORS.muted);
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(6.2);
-        const detail = doc.splitTextToSize(ascii(node.detail), width - 8).slice(0, 3);
-        doc.text(detail, x + 4, y + 31);
-        setColor(doc, node.kind === "goal" ? [185, 187, 195] : COLORS.muted);
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(5.5);
-        doc.text(
-          `${node.duration}j | effort ${node.effort} | dampak ${node.impact} | yakin ${node.confidence}%`,
-          x + 4,
-          y + height - 5,
-        );
-      });
-    }
-  }
+  strategy.nodes.forEach((node) => {
+    const x = tx(node.x);
+    const y = ty(node.y);
+    const width = 228 * scale;
+    const height = 144 * scale;
+    const accent =
+      node.kind === "goal"
+        ? COLORS.signal
+        : node.kind === "risk"
+          ? COLORS.red
+          : node.kind === "decision"
+            ? COLORS.orange
+            : node.kind === "milestone"
+              ? COLORS.blue
+              : [125, 134, 157];
+    setColor(
+      doc,
+      node.kind === "goal"
+        ? COLORS.ink
+        : node.kind === "risk"
+          ? [255, 246, 241]
+          : [255, 255, 255],
+      "fill",
+    );
+    setColor(doc, COLORS.line, "draw");
+    doc.roundedRect(x, y, width, height, 2.5, 2.5, "FD");
+    setColor(doc, accent, "fill");
+    doc.rect(x, y, width, Math.max(1.1, 4 * scale), "F");
+    setColor(doc, node.kind === "goal" ? COLORS.signal : accent);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(Math.max(4.2, Math.min(7, 11 * scale)));
+    doc.text(KIND_LABELS[node.kind] || "SIMPUL", x + 4 * scale, y + 14 * scale);
+    setColor(doc, node.kind === "goal" ? [255, 255, 255] : COLORS.ink);
+    doc.setFontSize(Math.max(5.2, Math.min(10, 16 * scale)));
+    const title = doc
+      .splitTextToSize(ascii(node.title), Math.max(18, width - 8 * scale))
+      .slice(0, 2);
+    doc.text(title, x + 4 * scale, y + 34 * scale);
+    setColor(doc, node.kind === "goal" ? [185, 187, 195] : COLORS.muted);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(Math.max(4, Math.min(7, 10 * scale)));
+    const detail = doc
+      .splitTextToSize(ascii(node.detail), Math.max(18, width - 8 * scale))
+      .slice(0, 3);
+    doc.text(detail, x + 4 * scale, y + 75 * scale);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(Math.max(3.8, Math.min(6, 9 * scale)));
+    doc.text(
+      `${node.duration}j | E${node.effort} | D${node.impact} | ${node.confidence}%`,
+      x + 4 * scale,
+      y + height - 7 * scale,
+    );
+  });
 }
 
 function addSourcesPage(doc, sources) {
@@ -380,11 +422,13 @@ function addFooters(doc) {
   const pageCount = doc.getNumberOfPages();
   for (let page = 1; page <= pageCount; page += 1) {
     doc.setPage(page);
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
     setColor(doc, COLORS.muted);
     doc.setFont("helvetica", "normal");
     doc.setFontSize(6.5);
-    doc.text("SIMPUL - AI Strategy Studio", MARGIN, PAGE_HEIGHT - 7);
-    doc.text(`Halaman ${page}/${pageCount}`, PAGE_WIDTH - MARGIN, PAGE_HEIGHT - 7, {
+    doc.text("SIMPUL - AI Strategy Studio", MARGIN, pageHeight - 7);
+    doc.text(`Halaman ${page}/${pageCount}`, pageWidth - MARGIN, pageHeight - 7, {
       align: "right",
     });
   }
@@ -405,7 +449,7 @@ export function createStrategyPdf(strategy, audit) {
   });
   addSummaryPage(doc, strategy, audit);
   if (strategy.prompt) addTextPages(doc, "Input strategi lengkap", strategy.prompt);
-  addMapPages(doc, strategy);
+  addMapPosterPage(doc, strategy, audit);
   addSourcesPage(doc, strategy.sources);
   addFooters(doc);
   return doc;

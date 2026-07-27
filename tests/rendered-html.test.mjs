@@ -50,6 +50,7 @@ test("ships the model pipeline, audit engine, and responsive product shell", asy
     pagesConfig,
     packageJson,
     pdfExporter,
+    formatExporter,
   ] =
     await Promise.all([
       readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -65,6 +66,7 @@ test("ships the model pipeline, audit engine, and responsive product shell", asy
       readFile(new URL("../vite.pages.config.ts", import.meta.url), "utf8"),
       readFile(new URL("../package.json", import.meta.url), "utf8"),
       readFile(new URL("../app/lib/export-pdf.js", import.meta.url), "utf8"),
+      readFile(new URL("../app/lib/export-formats.js", import.meta.url), "utf8"),
     ]);
 
   assert.match(page, /onPointerMove/);
@@ -85,7 +87,10 @@ test("ships the model pipeline, audit engine, and responsive product shell", asy
   assert.match(page, /duplicateSelected/);
   assert.match(page, /splitSelected/);
   assert.match(page, /accept="\.txt,\.md,text\/plain,text\/markdown"/);
-  assert.match(page, /exportPdf/);
+  assert.match(page, /exportStrategy/);
+  assert.match(page, /downloadStrategySvg/);
+  assert.match(page, /downloadStrategyDocx/);
+  assert.match(page, /downloadStrategyJson/);
   assert.doesNotMatch(page, /maxLength=/);
   assert.doesNotMatch(page, /\/3000/);
   assert.doesNotMatch(page, /zoom-controls/);
@@ -94,19 +99,19 @@ test("ships the model pipeline, audit engine, and responsive product shell", asy
   assert.match(strategy, /function countCycles/);
   assert.match(strategy, /function calculateCriticalPath/);
   assert.match(strategy, /function arrangeStrategyNodes/);
+  assert.match(strategy, /function ensureConnectedStrategyGraph/);
+  assert.match(strategy, /function getOrthogonalEdgeGeometry/);
   assert.match(strategy, /function getStrategyCanvasSize/);
   assert.match(strategy, /function inferEdgeRelation/);
   assert.match(strategy, /effortReturn/);
-  assert.match(generateRoute, /google\/gemini-3\.5-flash/);
-  assert.match(generateRoute, /openai\/gpt-5\.2-codex/);
-  assert.match(generateRoute, /anthropic\/claude-sonnet-5/);
+  assert.match(generateRoute, /google\/gemini-2\.5-flash/);
+  assert.match(generateRoute, /google\/gemini-2\.5-flash-lite/);
+  assert.match(generateRoute, /openai\/gpt-5\.4-mini/);
+  assert.match(generateRoute, /minimax\/minimax-m3/);
   assert.match(generateRoute, /qwen\/qwen3\.7-max/);
-  assert.match(generateRoute, /openai\/gpt-4o-mini-search-preview/);
-  assert.match(generateRoute, /google\/gemini-3\.5-flash-lite/);
-  assert.match(generateRoute, /google\/gemini-3\.6-flash/);
   assert.match(generateRoute, /qwen\/qwen3\.7-plus/);
+  assert.doesNotMatch(generateRoute, /gemini-3\.5|gpt-5\.2-codex|claude-sonnet/);
   assert.match(generateRoute, /openrouter:web_search/);
-  assert.match(generateRoute, /web_search_options/);
   assert.match(generateRoute, /engine:\s*"auto"/);
   assert.match(generateRoute, /response_format/);
   assert.match(generateRoute, /response-healing/);
@@ -118,7 +123,6 @@ test("ships the model pipeline, audit engine, and responsive product shell", asy
   assert.match(auditRoute, /response-healing/);
   assert.doesNotMatch(auditRoute, /temperature:\s*0\./);
   assert.match(browserPipeline, /openrouter:web_search/);
-  assert.match(browserPipeline, /web_search_options/);
   assert.match(browserPipeline, /engine:\s*"auto"/);
   assert.doesNotMatch(browserPipeline, /engine:\s*"parallel"/);
   assert.doesNotMatch(browserPipeline, /temperature:\s*0\./);
@@ -136,8 +140,12 @@ test("ships the model pipeline, audit engine, and responsive product shell", asy
   assert.match(css, /prefers-reduced-motion/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.match(packageJson, /jspdf/);
+  assert.match(packageJson, /docx/);
   assert.match(pdfExporter, /createStrategyPdf/);
-  assert.match(pdfExporter, /addMapPages/);
+  assert.match(pdfExporter, /addMapPosterPage/);
+  assert.match(pdfExporter, /orthogonalPoints/);
+  assert.match(formatExporter, /createStrategySvg/);
+  assert.match(formatExporter, /createStrategyDocxBlob/);
 
   await assert.rejects(
     access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)),

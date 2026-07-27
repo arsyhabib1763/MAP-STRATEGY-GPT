@@ -3,6 +3,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import test from "node:test";
 import { createStrategyPdf } from "../app/lib/export-pdf.js";
+import {
+  createStrategyDocxBlob,
+  createStrategySvg,
+} from "../app/lib/export-formats.js";
 
 function fixture() {
   const nodes = Array.from({ length: 18 }, (_, index) => ({
@@ -88,16 +92,42 @@ function fixture() {
   };
 }
 
-test("creates a multi-page strategy map and audit PDF", async () => {
+test("creates an audit PDF with the full strategy map on exactly one poster page", async () => {
   const { strategy, audit } = fixture();
   const pdf = createStrategyPdf(strategy, audit);
   const bytes = Buffer.from(pdf.output("arraybuffer"));
   assert.equal(bytes.subarray(0, 4).toString(), "%PDF");
   assert.ok(bytes.length > 12_000);
-  assert.ok(pdf.getNumberOfPages() >= 4);
+  assert.equal(pdf.getNumberOfPages(), 4);
+  pdf.setPage(3);
+  assert.ok(pdf.internal.pageSize.getWidth() >= 841);
 
   if (process.env.SIMPUL_PDF_FIXTURE) {
     await mkdir(dirname(process.env.SIMPUL_PDF_FIXTURE), { recursive: true });
     await writeFile(process.env.SIMPUL_PDF_FIXTURE, bytes);
+  }
+});
+
+test("creates editable SVG and DOCX strategy exports", async () => {
+  const { strategy, audit } = fixture();
+  const svg = createStrategySvg(strategy, audit);
+  assert.match(svg, /^<\?xml/);
+  assert.match(svg, /stroke-linejoin="round"/);
+  assert.equal((svg.match(/class=/g) ?? []).length, 0);
+  for (const node of strategy.nodes) {
+    assert.match(svg, new RegExp(node.title));
+  }
+  for (const edge of strategy.edges) {
+    assert.match(svg, new RegExp(edge.label));
+  }
+
+  const docx = await createStrategyDocxBlob(strategy, audit);
+  const bytes = Buffer.from(await docx.arrayBuffer());
+  assert.equal(bytes.subarray(0, 2).toString(), "PK");
+  assert.ok(bytes.length > 10_000);
+
+  if (process.env.SIMPUL_DOCX_FIXTURE) {
+    await mkdir(dirname(process.env.SIMPUL_DOCX_FIXTURE), { recursive: true });
+    await writeFile(process.env.SIMPUL_DOCX_FIXTURE, bytes);
   }
 });

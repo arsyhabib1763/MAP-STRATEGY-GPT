@@ -13,20 +13,19 @@ Satu permintaan melewati empat role dengan model berbeda:
 
 | Role | Model OpenRouter | Tanggung jawab |
 | --- | --- | --- |
-| Thinking & Research | `google/gemini-3.5-flash` | Riset web, fakta, asumsi, risiko, dan indikator keberhasilan |
-| Worker | `openai/gpt-5.2-codex` | Rubrik, hard constraint, bobot, dan horizon audit |
-| Nodes & Concept Map Architect | `anthropic/claude-sonnet-5` | Directed graph berisi node dan dependency |
+| Thinking & Research | `google/gemini-2.5-flash` | Riset web, fakta, asumsi, risiko, dan indikator keberhasilan ($0.30 / $2.50 per 1M token) |
+| Worker | `openai/gpt-5.4-mini` | Rubrik, hard constraint, bobot, dan horizon audit ($0.75 / $4.50) |
+| Nodes & Concept Map Architect | `minimax/minimax-m3` | Directed graph besar dan terhubung dengan biaya token rendah ($0.30 / $1.20) |
 | Strategy Auditor | `qwen/qwen3.7-max` | Audit semantik, bottleneck, leverage, dan saran korektif |
 
-Semua model berada di bawah batas biaya yang ditetapkan: input kurang dari
-US$3 dan output kurang dari US$15 per satu juta token berdasarkan katalog
+Semua model non-auditor berada di bawah batas biaya yang ditetapkan: input maksimal
+US$1.50 dan output maksimal US$8 per satu juta token berdasarkan katalog
 OpenRouter ketika aplikasi disusun.
 
 Riset menggunakan server tool `openrouter:web_search` dengan pemilihan engine
 otomatis dan batas hasil/konteks eksplisit. Jika server tool atau endpoint model
 utama sedang gagal, pipeline beralih ke model cadangan yang tetap berada di
-bawah batas biaya; untuk role riset tersedia failover native-search
-`openai/gpt-4o-mini-search-preview`. Semua keluaran antar-agent memakai JSON
+bawah batas biaya. Semua keluaran antar-agent memakai JSON
 Schema strict dan response healing agar graph dapat diproses secara
 deterministik sekaligus lebih tahan terhadap JSON model yang tidak sempurna.
 
@@ -38,12 +37,17 @@ deterministik sekaligus lebih tahan terhadap JSON model yang tidak sempurna.
 - Prompt awal tidak memiliki batas karakter dari aplikasi. Pengguna dapat
   menempel strategi terperinci atau mengimpor berkas `.txt`/`.md`.
 - Setiap garis mempunyai tipe relasi dan keterangan otomatis yang dapat diedit.
+- Graph diperiksa otomatis agar tidak ada node yatim atau komponen terpisah;
+  setiap cabang diarahkan kembali ke sasaran.
 - Node dapat diduplikasi, dipecah menjadi langkah-langkah, diubah tipe/statusnya,
-  lalu disusun ulang secara deterministik.
+  lalu disusun ulang memakai layer dependensi dan pengurangan crossing.
+- Garis memakai jalur ortogonal dengan sudut membulat agar mudah dilacak.
 - Perangkat sentuh menggunakan pinch dua jari untuk zoom dan satu jari pada
   ruang kosong untuk menggeser canvas.
-- Ekspor PDF memuat ringkasan, prompt lengkap, audit terakhir, strategy map
-  bertile untuk peta besar, serta sumber riset.
+- Ekspor PDF memuat ringkasan, prompt lengkap, audit terakhir, seluruh strategy
+  map pada tepat satu halaman poster A1/A0, serta sumber riset.
+- Ekspor tambahan tersedia sebagai poster SVG vektor, laporan Word DOCX, dan
+  backup JSON.
 
 ## Audit dua lapis
 
